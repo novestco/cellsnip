@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CellSnip</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js"></script>
+<style>
+  :root{
+    --ink:#1b2a3a;          /* chrome */
+    --ink-2:#24384d;
+    --paper:#f5f3ee;        /* viewer background */
+    --line:#d8d3c8;
+    --accent:#b8860b;       /* snip amber */
+    --ok:#1e7a45;           /* validation green */
+    --bad:#b03a2e;          /* exception red */
+    --blue:#2e6da4;         /* text snip */
+    --sum:#3d7a3d;          /* sum snip */
+    --muted:#7d8b99;
+    font-size:13px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"Segoe UI",system-ui,sans-serif;color:var(--ink);
+    display:flex;flex-direction:column;background:var(--paper);overflow:hidden;
+  }
+  /* ---------- top chrome ---------- */
+  #chrome{background:var(--ink);color:#e9eef3;padding:8px 10px;flex:0 0 auto}
+  #chrome .row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+  #chrome .row:last-child{margin-bottom:0}
+  #brand{font-weight:600;letter-spacing:.4px;font-size:13px}
+  #brand b{color:#e6b34a}
+  select,input[type=number]{
+    background:var(--ink-2);color:#e9eef3;border:1px solid #3a5068;border-radius:3px;
+    padding:4px 6px;font-size:12px;min-width:0;
+  }
+  #docSelect{flex:1}
+  button{
+    background:var(--ink-2);color:#e9eef3;border:1px solid #3a5068;border-radius:3px;
+    padding:4px 8px;font-size:12px;cursor:pointer;white-space:nowrap;
+  }
+  button:hover{background:#31485f}
+  button:disabled{opacity:.45;cursor:default}
+  button.small{padding:3px 6px;font-size:11px}
+  /* snip mode buttons */
+  #modes{display:flex;gap:4px;flex-wrap:wrap}
+  .mode{flex:1;text-align:center;border-width:1px;font-weight:600}
+  .mode[data-mode=text].active{background:var(--blue);border-color:var(--blue)}
+  .mode[data-mode=sum].active{background:var(--sum);border-color:var(--sum)}
+  .mode[data-mode=table].active{background:var(--accent);border-color:var(--accent);color:#1b2a3a}
+  .mode[data-mode=validate].active{background:var(--ok);border-color:var(--ok)}
+  .mode[data-mode=exception].active{background:var(--bad);border-color:var(--bad)}
+  label.chk{display:flex;align-items:center;gap:4px;font-size:11px;color:#b9c6d2;cursor:pointer}
+  /* ---------- viewer ---------- */
+  #viewerWrap{flex:1;overflow:auto;position:relative;background:var(--paper);
+    display:flex;justify-content:center;align-items:flex-start;padding:10px}
+  #pageBox{position:relative;box-shadow:0 1px 6px rgba(27,42,58,.25);background:#fff}
+  #pdfCanvas{display:block}
+  #overlay{position:absolute;inset:0;cursor:crosshair}
+  #selRect{position:absolute;border:1.5px dashed var(--accent);background:rgba(184,134,11,.12);display:none;pointer-events:none}
+  .srcHighlight{position:absolute;border:2px solid var(--accent);background:rgba(184,134,11,.15);pointer-events:none;
+    animation:pulse 1.2s ease-in-out 3}
+  @keyframes pulse{50%{background:rgba(184,134,11,.35)}}
+  #emptyState{color:var(--muted);text-align:center;margin-top:80px;line-height:1.7;padding:0 20px}
+  #emptyState .big{font-size:15px;color:var(--ink)}
+  /* ---------- footer ---------- */
+  #footer{flex:0 0 auto;background:#fff;border-top:1px solid var(--line);padding:7px 10px;font-size:12px}
+  #cellInfo{display:flex;align-items:center;gap:8px}
+  #cellAddr{font-family:Consolas,monospace;font-weight:700}
+  #cellSnipInfo{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #footer button{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  #footer button:hover{background:#f0ede5}
+  #status{margin-top:5px;color:var(--muted);min-height:15px;font-size:11px}
+  #status.err{color:var(--bad)} #status.ok{color:var(--ok)}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+
+<div id="chrome">
+  <div class="row">
+    <span id="brand">Cell<b>Snip</b></span>
+    <select id="docSelect" title="Loaded documents"><option value="">— no document —</option></select>
+    <button id="btnOpen" title="Open PDF(s)">+ PDF</button>
+  </div>
+  <div class="row">
+    <button id="btnPrev" class="small" title="Previous page">◀</button>
+    <input id="pageNum" type="number" value="1" min="1" style="width:52px" title="Page">
+    <span id="pageCount" style="font-size:11px;color:#b9c6d2">/ 0</span>
+    <button id="btnNext" class="small" title="Next page">▶</button>
+    <span style="flex:1"></span>
+    <button id="btnZoomOut" class="small" title="Zoom out">−</button>
+    <button id="btnZoomIn" class="small" title="Zoom in">+</button>
+    <button id="btnFit" class="small" title="Fit width">Fit</button>
+  </div>
+  <div class="row" id="modes">
+    <button class="mode active" data-mode="text"  title="Drag a box: extracted text goes into the selected cell">Text</button>
+    <button class="mode" data-mode="sum"   title="Drag a box: all numbers inside are summed into the selected cell">Sum</button>
+    <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table</button>
+    <button class="mode" data-mode="validate" title="Drag a box: marks the selected cell as validated (✓) against this source">✓</button>
+    <button class="mode" data-mode="exception" title="Drag a box: marks the selected cell as an exception (✗) with a note">✗</button>
+  </div>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
+    <span style="flex:1"></span>
+    <button id="btnAutoMatch" class="small" title="Automatically match selected cells against loaded documents">Auto Match</button>
+    <button id="btnOverview" class="small" title="Create a 'Snip Overview' worksheet documenting every snip">Export overview</button>
+  </div>
+</div>
+
+<div id="viewerWrap">
+  <div id="emptyState">
+    <div class="big">No document loaded</div>
+    Click <b>+ PDF</b> to open one or more support documents.<br>
+    Select a cell in Excel, pick a snip mode, then drag a box on the page.<br>
+    Documents are saved securely in this workbook and will reload next time you open it.
+  </div>
+  <div id="pageBox" style="display:none">
+    <canvas id="pdfCanvas"></canvas>
+    <div id="overlay"><div id="selRect"></div></div>
+  </div>
+</div>
+
+<div id="footer">
+  <div id="cellInfo">
+    <span id="cellAddr">—</span>
+    <span id="cellSnipInfo"></span>
+    <button id="btnGoto" class="small" disabled title="Jump to the source of the selected cell's snip">Go to source</button>
+  </div>
+  <div id="status">Loading…</div>
+</div>
+
+<input type="file" id="fileInput" accept="application/pdf" multiple>
+<script>
+/* =========================================================================
+   CellSnip — DataSnipper-style snipping for Excel
+   Part 1: state, persistence, rendering, selection
+   ========================================================================= */
+"use strict";
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const S = {
+  docs: new Map(),        // name -> { bytes:ArrayBuffer, pdf:PDFDocumentProxy }
+  cur: null,              // current doc name
+  page: 1,
+  pageObj: null,
+  viewport: null,
+  scale: 1.2,
+  fitWidth: true,
+  mode: "text",
+  registry: new Map(),    // "Sheet!A1" -> snip record
+  selectedCell: null,     // { sheet, addr }
+  ocrWorker: null,
+};
+
+const $ = id => document.getElementById(id);
+const status = (msg, cls) => { const s=$("status"); s.textContent=msg||""; s.className=cls||""; };
+
+};
+
+/* ---------------- Workbook sync: save/load PDFs to Excel ---------------- */
+async function arrayBufferToBase64Async(buffer) {
+  return new Promise((resolve) => {
+    const blob = new Blob([buffer], { type: 'application/pdf' });
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function base64ToArrayBufferAsync(base64) {
+  const res = await fetch('data:application/pdf;base64,' + base64);
+  return await res.arrayBuffer();
+}
+
+async function saveAllDocsToWorkbook() {
+  try {
+    await Excel.run(async ctx => {
+      let ws = ctx.workbook.worksheets.getItemOrNullObject("_CellSnip_Docs");
+      await ctx.sync();
+      if (ws.isNullObject) {
+        ws = ctx.workbook.worksheets.add("_CellSnip_Docs");
+        ws.visibility = Excel.SheetVisibility.hidden;
+      }
+      ws.getRange().clear();
+      await ctx.sync();
+      
+      let rows = [];
+      for (const [name, doc] of S.docs.entries()) {
+        const b64 = await arrayBufferToBase64Async(doc.bytes);
+        const CHUNK_SIZE = 30000;
+        for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
+          rows.push([name, i / CHUNK_SIZE, b64.slice(i, i + CHUNK_SIZE)]);
+        }
+      }
+      
+      const BATCH = 50; 
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const batchRows = rows.slice(i, i + BATCH);
+        ws.getRangeByIndexes(i, 0, batchRows.length, 3).values = batchRows;
+        await ctx.sync();
+      }
+    });
+  } catch(e) { console.error("Failed to save docs to workbook", e); }
+}
+
+async function loadDocsFromWorkbook() {
+  try {
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItemOrNullObject("_CellSnip_Docs");
+      await ctx.sync();
+      if (ws.isNullObject) return;
+      
+      const used = ws.getUsedRangeOrNullObject();
+      used.load("values");
+      await ctx.sync();
+      if (used.isNullObject) return;
+      
+      const values = used.values;
+      const docMap = new Map();
+      for (const r of values) {
+        if (!r[0]) continue;
+        const name = r[0];
+        const chunkIdx = r[1];
+        const chunkStr = r[2];
+        if (!docMap.has(name)) docMap.set(name, []);
+        docMap.get(name)[chunkIdx] = chunkStr;
+      }
+      
+      for (const [name, chunks] of docMap.entries()) {
+        if (S.docs.has(name)) continue; 
+        const b64 = chunks.join("");
+        const bytes = await base64ToArrayBufferAsync(b64);
+        await addDoc(name, bytes, false);
+      }
+    });
+  } catch(e) { console.error("Failed to load docs from workbook", e); }
+}
+
+/* ---------------- document loading ---------------- */
+async function addDoc(name, bytes, persist=true){
+  try{
+    const pdf = await pdfjsLib.getDocument({data: bytes.slice(0)}).promise;
+    S.docs.set(name, {bytes, pdf});
+    if (persist) {
+      saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
+    }
+    refreshDocSelect();
+    if (!S.cur) switchDoc(name);
+    status(`Loaded ${name} (${pdf.numPages} pages)`, "ok");
+  }catch(e){ status(`Could not open ${name}: ${e.message}`, "err"); }
+}
+
+function refreshDocSelect(){
+  const sel = $("docSelect"); sel.innerHTML = "";
+  if (!S.docs.size){ sel.innerHTML = '<option value="">— no document —</option>'; return; }
+  for (const name of S.docs.keys()){
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    if (name === S.cur) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+function switchDoc(name, page=1){
+  if (!S.docs.has(name)) return;
+  S.cur = name; S.page = page;
+  refreshDocSelect();
+  renderPage();
+}
+
+/* ---------------- rendering ---------------- */
+let renderTask = null;
+async function renderPage(){
+  const d = S.docs.get(S.cur);
+  if (!d) return;
+  const pdf = d.pdf;
+  S.page = Math.min(Math.max(1, S.page), pdf.numPages);
+  $("pageNum").value = S.page;
+  $("pageCount").textContent = "/ " + pdf.numPages;
+  $("emptyState").style.display = "none";
+  $("pageBox").style.display = "block";
+
+  S.pageObj = await pdf.getPage(S.page);
+  if (S.fitWidth){
+    const avail = $("viewerWrap").clientWidth - 24;
+    const base = S.pageObj.getViewport({scale: 1});
+    S.scale = Math.max(0.4, avail / base.width);
+  }
+  S.viewport = S.pageObj.getViewport({scale: S.scale});
+
+  const canvas = $("pdfCanvas");
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = Math.floor(S.viewport.width * dpr);
+  canvas.height = Math.floor(S.viewport.height * dpr);
+  canvas.style.width  = S.viewport.width + "px";
+  canvas.style.height = S.viewport.height + "px";
+  const ctx = canvas.getContext("2d");
+  if (renderTask) { try{renderTask.cancel();}catch(_){} }
+  renderTask = S.pageObj.render({canvasContext: ctx, viewport: S.viewport,
+                                 transform: dpr!==1 ? [dpr,0,0,dpr,0,0] : null});
+  try{ await renderTask.promise; }catch(_){/* cancelled */}
+  clearHighlights();
+}
+
+function clearHighlights(){
+  document.querySelectorAll(".srcHighlight").forEach(el=>el.remove());
+}
+
+/* ---------------- drag selection on overlay ---------------- */
+const overlay = $("overlay"), selRect = $("selRect");
+let dragStart = null;
+
+overlay.addEventListener("mousedown", e=>{
+  const r = overlay.getBoundingClientRect();
+  dragStart = {x: e.clientX - r.left, y: e.clientY - r.top};
+  Object.assign(selRect.style, {left:dragStart.x+"px", top:dragStart.y+"px", width:"0", height:"0", display:"block"});
+  e.preventDefault();
+});
+overlay.addEventListener("mousemove", e=>{
+  if (!dragStart) return;
+  const r = overlay.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  Object.assign(selRect.style, {
+    left: Math.min(x, dragStart.x)+"px", top: Math.min(y, dragStart.y)+"px",
+    width: Math.abs(x - dragStart.x)+"px", height: Math.abs(y - dragStart.y)+"px"});
+});
+window.addEventListener("mouseup", async e=>{
+  if (!dragStart) return;
+  const r = overlay.getBoundingClientRect();
+  const x2 = Math.min(Math.max(e.clientX - r.left, 0), r.width);
+  const y2 = Math.min(Math.max(e.clientY - r.top , 0), r.height);
+  const rect = { x: Math.min(dragStart.x, x2), y: Math.min(dragStart.y, y2),
+                 w: Math.abs(x2 - dragStart.x), h: Math.abs(y2 - dragStart.y) };
+  dragStart = null;
+  selRect.style.display = "none";
+  if (rect.w < 5 || rect.h < 5) return;   // ignore stray clicks
+  await handleSnip(rect);
+});
+
+/* viewport(css px) rect -> PDF user-space rect [x1,y1,x2,y2] (y up) */
+function toPdfRect(rect){
+  const p1 = S.viewport.convertToPdfPoint(rect.x, rect.y);
+  const p2 = S.viewport.convertToPdfPoint(rect.x + rect.w, rect.y + rect.h);
+  return [Math.min(p1[0],p2[0]), Math.min(p1[1],p2[1]), Math.max(p1[0],p2[0]), Math.max(p1[1],p2[1])];
+}
+/* PDF rect -> css px rect at current viewport */
+function toViewRect(pdfRect){
+  const a = S.viewport.convertToViewportPoint(pdfRect[0], pdfRect[1]);
+  const b = S.viewport.convertToViewportPoint(pdfRect[2], pdfRect[3]);
+  const x = Math.min(a[0],b[0]), y = Math.min(a[1],b[1]);
+  return {x, y, w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1])};
+}
+/* =========================================================================
+   Part 2: extraction (text layer + OCR), snip actions, Excel integration
+   ========================================================================= */
+"use strict";
+
+/* ---------------- text extraction ---------------- */
+async function extractItems(pdfRect){
+  // returns text items inside pdfRect: [{str,x,y,w,h}]
+  const tc = await S.pageObj.getTextContent();
+  const out = [];
+  for (const it of tc.items){
+    if (!it.str || !it.str.trim()) continue;
+    const x = it.transform[4], y = it.transform[5];
+    const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
+    const cx = x + w/2, cy = y + h/2;                    // item center
+    if (cx >= pdfRect[0] && cx <= pdfRect[2] && cy >= pdfRect[1] && cy <= pdfRect[3])
+      out.push({str: it.str, x, y, w, h});
+  }
+  // sort: top-to-bottom (pdf y is up), then left-to-right
+  out.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+  return out;
+}
+
+async function ocrRect(rect){
+  status("Running OCR…");
+  if (!S.ocrWorker){
+    S.ocrWorker = await Tesseract.createWorker("eng");
+  }
+  // crop the region from the PDF at 2x for better accuracy
+  const scale2 = S.scale * 2;
+  const vp2 = S.pageObj.getViewport({scale: scale2});
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(rect.w*2); c.height = Math.ceil(rect.h*2);
+  const ctx = c.getContext("2d");
+  ctx.translate(-rect.x*2, -rect.y*2);
+  await S.pageObj.render({canvasContext: ctx, viewport: vp2}).promise;
+  const res = await S.ocrWorker.recognize(c);
+  return (res.data.text || "").trim();
+}
+
+/* text items -> single string (joins rows with newline) */
+function itemsToText(items){
+  if (!items.length) return "";
+  const rows = groupRows(items);
+  return rows.map(r => r.map(i=>i.str).join(" ").replace(/\s+/g," ").trim()).join("\n");
+}
+
+/* group items into visual rows by y proximity */
+function groupRows(items){
+  const rows = [];
+  const tol = median(items.map(i=>i.h)) * 0.6 || 4;
+  for (const it of items){
+    const row = rows.find(r => Math.abs(r.y - it.y) <= tol);
+    if (row){ row.items.push(it); row.y = (row.y + it.y)/2; }
+    else rows.push({y: it.y, items:[it]});
+  }
+  rows.sort((a,b)=> b.y - a.y);
+  return rows.map(r => r.items.sort((a,b)=>a.x-b.x));
+}
+const median = a => { if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+
+/* ---------------- number parsing ---------------- */
+const NUM_RE = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\$?\s?\d+(?:\.\d+)?\)?/g;
+function parseNumbers(text){
+  const out = [];
+  for (const m of (text.match(NUM_RE) || [])){
+    let t = m.trim(); if (!/\d/.test(t)) continue;
+    const neg = /^\(.*\)$/.test(t) || t.includes("-");
+    t = t.replace(/[($,)\s-]/g, "");
+    const v = parseFloat(t);
+    if (!isNaN(v)) out.push(neg ? -v : v);
+  }
+  return out;
+}
+/* if the snip is exactly one number, write it as a number */
+function coerce(text){
+  const t = text.replace(/\n/g," ").trim();
+  const nums = t.match(NUM_RE) || [];
+  if (nums.length === 1 && nums[0].replace(/\s/g,"") === t.replace(/\s/g,"")){
+    const v = parseNumbers(t);
+    if (v.length === 1) return v[0];
+  }
+  return t;
+}
+
+/* ---------------- table snip (beta): rows by y, columns by x clustering --- */
+function itemsToTable(items){
+  const rows = groupRows(items);
+  if (!rows.length) return [[]];
+  // cluster x-start positions into column anchors
+  const xs = items.map(i=>i.x).sort((a,b)=>a-b);
+  const gap = Math.max(10, median(items.map(i=>i.h)) * 1.4);
+  const cols = [];
+  for (const x of xs){
+    const c = cols.find(c => Math.abs(c - x) <= gap);
+    if (c === undefined) cols.push(x);
+  }
+  cols.sort((a,b)=>a-b);
+  const table = rows.map(r=>{
+    const cells = new Array(cols.length).fill("");
+    for (const it of r){
+      let ci = 0, best = Infinity;
+      cols.forEach((c,i)=>{ const d = Math.abs(c - it.x); if (d < best){best = d; ci = i;} });
+      cells[ci] = cells[ci] ? cells[ci] + " " + it.str : it.str;
+    }
+    return cells.map(v => { const c = coerce(v); return c === "" ? "" : c; });
+  });
+  return table;
+}
+
+/* ---------------- main snip handler ---------------- */
+const FILL = { text:"#DDEBF7", sum:"#E2EFDA", table:"#FCE4B0", validate:"#C6EFCE", exception:"#FFC7CE" };
+
+async function handleSnip(rect){
+  if (!S.pageObj){ return; }
+  const pdfRect = toPdfRect(rect);
+  let items = await extractItems(pdfRect);
+  let raw = itemsToText(items);
+  if (!raw && $("chkOCR").checked){
+    try { raw = await ocrRect(rect); }
+    catch(e){ status("OCR failed: " + e.message, "err"); return; }
+  }
+
+  const mode = S.mode;
+  let value, note;
+  if (mode === "text"){
+    if (!raw){ status("No text found in selection (enable OCR for scanned docs).", "err"); return; }
+    value = coerce(raw);
+  } else if (mode === "sum"){
+    const nums = raw ? parseNumbers(raw) : [];
+    if (!nums.length){ status("No numbers found in selection.", "err"); return; }
+    value = nums.reduce((a,b)=>a+b, 0);
+    note = `Sum of ${nums.length} value(s): ${nums.join(", ")}`;
+  } else if (mode === "table"){
+    if (!items.length){ status("Table snip needs a text layer (not available via OCR).", "err"); return; }
+    value = itemsToTable(items);
+  } else if (mode === "validate"){
+    value = "✓";
+  } else if (mode === "exception"){
+    value = "✗";
+    note = prompt("Exception note:", "") || "";
+  }
+
+  try { await writeSnip(mode, value, raw, pdfRect, note); }
+  catch(e){ status("Excel write failed: " + (e.message||e), "err"); }
+}
+
+/* ---------------- auto match (document matching) ---------------- */
+function getColLetter(colIdx) {
+    let letter = "";
+    while (colIdx >= 0) {
+        letter = String.fromCharCode(65 + (colIdx % 26)) + letter;
+        colIdx = Math.floor(colIdx / 26) - 1;
+    }
+    return letter;
+}
+
+async function autoSnip() {
+  if (!S.docs.size) { status("Load a document first to auto-match.", "err"); return; }
+  
+  await Excel.run(async ctx => {
+    const rng = ctx.workbook.getSelectedRange();
+    rng.load(["values", "text", "rowIndex", "columnIndex", "worksheet/name", "rowCount", "columnCount"]);
+    await ctx.sync();
+    
+    if (rng.rowCount * rng.columnCount > 1000) {
+      status("Please select 1000 cells or fewer.", "err"); return;
+    }
+    
+    const sheetName = rng.worksheet.name;
+    let matchCount = 0;
+    
+    const docPages = []; 
+    for (const [docName, d] of S.docs.entries()) {
+      const numPages = d.pdf.numPages;
+      for (let p = 1; p <= numPages; p++) {
+        status(`Scanning ${docName} page ${p}/${numPages}...`);
+        const page = await d.pdf.getPage(p);
+        const tc = await page.getTextContent();
+        const validItems = tc.items.filter(it => it.str && it.str.trim());
+        if (!validItems.length) continue;
+        
+        const items = validItems.map(it => ({
+            str: it.str,
+            x: it.transform[4],
+            y: it.transform[5],
+            w: it.width,
+            h: it.height || Math.abs(it.transform[3]) || 8
+        }));
+        
+        const rows = groupRows(items).map(rowItems => ({
+            text: rowItems.map(i => i.str).join(" ").replace(/\s+/g, " ").trim(),
+            items: rowItems
+        }));
+        
+        docPages.push({ docName, pageNum: p, rows });
+      }
+    }
+    
+    status("Matching cells...");
+    for (let r = 0; r < rng.rowCount; r++) {
+      for (let c = 0; c < rng.columnCount; c++) {
+        const val = rng.values[r][c];
+        const textVal = rng.text[r][c].trim();
+        if (val === "" || val === null || textVal === "") continue;
+        
+        let matched = null;
+        for (const page of docPages) {
+          for (const row of page.rows) {
+            if (row.text.includes(textVal)) {
+              matched = { page, row }; break;
+            }
+            if (typeof val === "number") {
+              const nums = parseNumbers(row.text);
+              if (nums.includes(val)) {
+                matched = { page, row }; break;
+              }
+            }
+          }
+          if (matched) break;
+        }
+        
+        if (matched) {
+          const xs = matched.row.items.map(i => i.x);
+          const ys = matched.row.items.map(i => i.y);
+          const xmaxs = matched.row.items.map(i => i.x + i.w);
+          const ymaxs = matched.row.items.map(i => i.y + i.h);
+          const pdfRect = [Math.min(...xs), Math.min(...ys), Math.max(...xmaxs), Math.max(...ymaxs)];
+          
+          const cellAddr = getColLetter(rng.columnIndex + c) + (rng.rowIndex + r + 1);
+          const key = `${sheetName}!${cellAddr}`;
+          
+          const cellRng = rng.worksheet.getRangeByIndexes(rng.rowIndex + r, rng.columnIndex + c, 1, 1);
+          cellRng.format.fill.color = FILL["text"];
+          
+          const rec = {
+            key, sheet: sheetName, addr: cellAddr, mode: "text",
+            value: String(val), doc: matched.page.docName, page: matched.page.pageNum,
+            rect: pdfRect.map(n => Math.round(n*100)/100),
+            raw: matched.row.text.slice(0, 500),
+            note: "Auto-matched",
+            ts: new Date().toISOString()
+          };
+          S.registry.set(key, rec);
+          await appendRegistryRow(ctx, rec);
+          
+          try {
+            if (Office.context.requirements.isSetSupported("ExcelApi", "1.10")) {
+              ctx.workbook.comments.add(key, `[CellSnip AUTO-MATCH]\nSource: ${rec.doc}, p.${rec.page}\nNote: Auto-matched`);
+            }
+          } catch(_){}
+          
+          matchCount++;
+        }
+      }
+    }
+    await ctx.sync();
+    status(`Auto match complete: found ${matchCount} match(es).`, "ok");
+  }).catch(e => {
+    status(`Auto match failed: ${e.message}`, "err");
+  });
+}
+
+/* ---------------- Excel write + registry ---------------- */
+const REG_SHEET = "_CellSnip";
+
+async function writeSnip(mode, value, raw, pdfRect, note){
+  await Excel.run(async ctx=>{
+    const rng = ctx.workbook.getSelectedRange();
+    rng.load(["address","rowIndex","columnIndex","worksheet/name"]);
+    await ctx.sync();
+
+    const sheet = rng.worksheet.name;
+    const addr = rng.address.split("!").pop().split(":")[0];
+    const key = `${sheet}!${addr}`;
+
+    if (mode === "table" && Array.isArray(value)){
+      const rows = value.length, cols = Math.max(...value.map(r=>r.length));
+      const norm = value.map(r => { const c=[...r]; while(c.length<cols) c.push(""); return c; });
+      const target = rng.worksheet.getRangeByIndexes(rng.rowIndex, rng.columnIndex, rows, cols);
+      target.values = norm;
+      target.format.fill.color = FILL.table;
+    } else if (mode === "validate" || mode === "exception"){
+      // don't overwrite the audited value — put the mark in the cell only if empty
+      rng.load("values"); await ctx.sync();
+      const existing = rng.values[0][0];
+      if (existing === "" || existing === null) rng.values = [[value]];
+      rng.format.fill.color = FILL[mode];
+      rng.format.font.color = mode === "validate" ? "#1e7a45" : "#b03a2e";
+    } else {
+      rng.values = [[value]];
+      rng.format.fill.color = FILL[mode];
+    }
+
+    const rec = {
+      key, sheet, addr, mode,
+      value: Array.isArray(value) ? "(table)" : String(value),
+      doc: S.cur, page: S.page,
+      rect: pdfRect.map(n=>Math.round(n*100)/100),
+      raw: (raw||"").slice(0,500),
+      note: note || "",
+      ts: new Date().toISOString()
+    };
+    S.registry.set(key, rec);
+    await appendRegistryRow(ctx, rec);
+
+    // source comment on the cell (ExcelApi 1.10+; ignore if unsupported)
+    try{
+      if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
+        const comments = ctx.workbook.comments;
+        const body = `[CellSnip ${mode.toUpperCase()}]\nSource: ${S.cur}, p.${S.page}` +
+                     (note ? `\nNote: ${note}` : "") +
+                     (mode==="sum" ? `\n${note||""}` : "");
+        comments.add(`${sheet}!${addr}`, body.trim());
+      }
+    }catch(_){/* comment may already exist */}
+
+    // move selection down one row, DataSnipper-style
+    if (mode !== "table"){
+      rng.worksheet.getRangeByIndexes(rng.rowIndex+1, rng.columnIndex, 1, 1).select();
+    }
+    await ctx.sync();
+    status(`${mode} snip → ${key}` + (mode==="sum" ? ` = ${value}` : ""), "ok");
+  });
+}
+
+async function appendRegistryRow(ctx, rec){
+  let ws = ctx.workbook.worksheets.getItemOrNullObject(REG_SHEET);
+  await ctx.sync();
+  if (ws.isNullObject){
+    ws = ctx.workbook.worksheets.add(REG_SHEET);
+    ws.getRange("A1:J1").values = [["Key","Sheet","Cell","Type","Value","Document","Page","RectPDF","Extracted","Timestamp"]];
+    ws.visibility = Excel.SheetVisibility.hidden;
+  }
+  const used = ws.getUsedRangeOrNullObject();
+  used.load("rowCount"); await ctx.sync();
+  const nextRow = used.isNullObject ? 1 : used.rowCount;   // 0-based index of next row
+  ws.getRangeByIndexes(nextRow, 0, 1, 10).values = [[
+    rec.key, rec.sheet, rec.addr, rec.mode, rec.value, rec.doc, rec.page,
+    JSON.stringify(rec.rect), rec.raw + (rec.note?` | note: ${rec.note}`:""), rec.ts
+  ]];
+}
+
+async function loadRegistry(){
+  try{
+    await Excel.run(async ctx=>{
+      const ws = ctx.workbook.worksheets.getItemOrNullObject(REG_SHEET);
+      await ctx.sync();
+      if (ws.isNullObject) return;
+      const used = ws.getUsedRangeOrNullObject(); used.load("values"); await ctx.sync();
+      if (used.isNullObject) return;
+      const rows = used.values.slice(1);
+      for (const r of rows){
+        if (!r[0]) continue;
+        S.registry.set(r[0], { key:r[0], sheet:r[1], addr:r[2], mode:r[3], value:r[4],
+          doc:r[5], page:Number(r[6])||1, rect: safeJson(r[7]), raw:r[8], ts:r[9] });
+      }
+    });
+    if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
+  }catch(e){ /* first run */ }
+}
+const safeJson = s => { try{ return JSON.parse(s); }catch(_){ return null; } };
+
+/* ---------------- selection tracking + go to source ---------------- */
+async function onSelectionChanged(){
+  try{
+    await Excel.run(async ctx=>{
+      const rng = ctx.workbook.getSelectedRange();
+      rng.load(["address","worksheet/name"]); await ctx.sync();
+      const sheet = rng.worksheet.name;
+      const addr = rng.address.split("!").pop().split(":")[0];
+      S.selectedCell = {sheet, addr};
+      $("cellAddr").textContent = `${sheet}!${addr}`;
+      const rec = S.registry.get(`${sheet}!${addr}`);
+      if (rec){
+        $("cellSnipInfo").textContent = `${rec.mode} · ${rec.doc} p.${rec.page}`;
+        $("btnGoto").disabled = false;
+      } else {
+        $("cellSnipInfo").textContent = "";
+        $("btnGoto").disabled = true;
+      }
+    });
+  }catch(_){}
+}
+
+async function gotoSource(){
+  const c = S.selectedCell; if (!c) return;
+  const rec = S.registry.get(`${c.sheet}!${c.addr}`); if (!rec) return;
+  if (!S.docs.has(rec.doc)){
+    status(`Document "${rec.doc}" is not loaded — open it with + PDF.`, "err"); return;
+  }
+  switchDoc(rec.doc, rec.page);
+  await renderPage();
+  if (rec.rect){
+    const v = toViewRect(rec.rect);
+    const hl = document.createElement("div");
+    hl.className = "srcHighlight";
+    Object.assign(hl.style, {left:v.x+"px", top:v.y+"px", width:v.w+"px", height:v.h+"px"});
+    overlay.appendChild(hl);
+    $("viewerWrap").scrollTo({top: Math.max(0, v.y - 120), behavior:"smooth"});
+  }
+  status(`Source: ${rec.doc}, page ${rec.page}`, "ok");
+}
+
+/* ---------------- documentation export ---------------- */
+async function exportOverview(){
+  if (!S.registry.size){ status("No snips to document yet.", "err"); return; }
+  await Excel.run(async ctx=>{
+    let ws = ctx.workbook.worksheets.getItemOrNullObject("Snip Overview");
+    await ctx.sync();
+    if (!ws.isNullObject) ws.delete();
+    ws = ctx.workbook.worksheets.add("Snip Overview");
+    const header = ["Cell","Type","Value","Source document","Page","Note / extracted text","Timestamp"];
+    const rows = [...S.registry.values()].map(r=>[
+      r.key, r.mode, r.value, r.doc, r.page, (r.note?r.note+" | ":"")+(r.raw||""), r.ts]);
+    ws.getRangeByIndexes(0,0,1,header.length).values = [header];
+    ws.getRangeByIndexes(0,0,1,header.length).format.font.bold = true;
+    ws.getRangeByIndexes(1,0,rows.length,header.length).values = rows;
+    ws.getUsedRange().format.autofitColumns();
+    ws.activate();
+    await ctx.sync();
+  });
+  status("Snip Overview sheet created.", "ok");
+}
+
+/* ---------------- UI wiring + init ---------------- */
+function wire(){
+  $("btnOpen").onclick = ()=> $("fileInput").click();
+  $("fileInput").onchange = async e=>{
+    for (const f of e.target.files){
+      const bytes = await f.arrayBuffer();
+      await addDoc(f.name, bytes);
+    }
+    e.target.value = "";
+  };
+  $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
+  $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
+  $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
+  $("pageNum").onchange = e=>{ S.page = parseInt(e.target.value)||1; renderPage(); };
+  $("btnZoomIn").onclick  = ()=>{ S.fitWidth=false; S.scale*=1.2; renderPage(); };
+  $("btnZoomOut").onclick = ()=>{ S.fitWidth=false; S.scale/=1.2; renderPage(); };
+  $("btnFit").onclick     = ()=>{ S.fitWidth=true; renderPage(); };
+  document.querySelectorAll(".mode").forEach(b=>{
+    b.onclick = ()=>{
+      document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active"); S.mode = b.dataset.mode;
+    };
+  });
+  $("btnGoto").onclick = gotoSource;
+  $("btnAutoMatch").onclick = autoSnip;
+  $("btnOverview").onclick = exportOverview;
+}
+
+Office.onReady(async info=>{
+  wire();
+  if (info.host !== Office.HostType.Excel){
+    status("Open this pane inside Excel.", "err"); return;
+  }
+  Office.context.document.addHandlerAsync(
+    Office.EventType.DocumentSelectionChanged, onSelectionChanged);
+  await loadRegistry();
+  await loadDocsFromWorkbook();
+  await onSelectionChanged();
+  
+  if (!S.docs.size) status("Ready — open a PDF to start snipping.");
+});
+</script>
+</body>
+</html>
