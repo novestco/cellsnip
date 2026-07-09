@@ -219,16 +219,17 @@ async function saveAllDocsToWorkbook() {
       let rows = [];
       for (const [name, doc] of S.docs.entries()) {
         const b64 = await arrayBufferToBase64Async(doc.bytes);
+        const folder = doc.folder || "";
         const CHUNK_SIZE = 30000;
         for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
-          rows.push([name, i / CHUNK_SIZE, b64.slice(i, i + CHUNK_SIZE)]);
+          rows.push([name, i / CHUNK_SIZE, b64.slice(i, i + CHUNK_SIZE), folder]);
         }
       }
       
       const BATCH = 50; 
       for (let i = 0; i < rows.length; i += BATCH) {
         const batchRows = rows.slice(i, i + BATCH);
-        ws.getRangeByIndexes(i, 0, batchRows.length, 3).values = batchRows;
+        ws.getRangeByIndexes(i, 0, batchRows.length, 4).values = batchRows;
         await ctx.sync();
       }
     });
@@ -249,30 +250,34 @@ async function loadDocsFromWorkbook() {
       
       const values = used.values;
       const docMap = new Map();
+      const folderMap = new Map();
       for (const r of values) {
         if (!r[0]) continue;
         const name = r[0];
         const chunkIdx = r[1];
         const chunkStr = r[2];
+        const folder = r[3] || "";
         if (!docMap.has(name)) docMap.set(name, []);
         docMap.get(name)[chunkIdx] = chunkStr;
+        if (folder) folderMap.set(name, folder);
       }
       
       for (const [name, chunks] of docMap.entries()) {
         if (S.docs.has(name)) continue; 
         const b64 = chunks.join("");
         const bytes = await base64ToArrayBufferAsync(b64);
-        await addDoc(name, bytes, false);
+        const folder = folderMap.get(name) || "";
+        await addDoc(name, bytes, false, folder);
       }
     });
   } catch(e) { console.error("Failed to load docs from workbook", e); }
 }
 
 /* ---------------- document loading ---------------- */
-async function addDoc(name, bytes, persist=true){
+async function addDoc(name, bytes, persist=true, folder=""){
   try{
     const pdf = await pdfjsLib.getDocument({data: bytes.slice(0)}).promise;
-    S.docs.set(name, {bytes, pdf});
+    S.docs.set(name, {bytes, pdf, folder});
     if (persist) {
       saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
     }
@@ -289,26 +294,165 @@ function refreshDocSelect(){
     sel.innerHTML = '<option value="">— no document —</option>'; 
     return; 
   }
-  for (const name of S.docs.keys()){
-    const o = document.createElement("option");
-    o.value = o.textContent = name;
-    if (name === S.cur) o.selected = true;
-    sel.appendChild(o);
-    
-    if (dl) {
-      const btn = document.createElement("div");
-      btn.textContent = name;
-      btn.title = name;
-      Object.assign(btn.style, {
-        padding: "6px 4px", fontSize: "11px", background: name === S.cur ? "#e3f2fd" : "#fff",
-        border: "1px solid " + (name === S.cur ? "#90caf9" : "#ccc"), borderRadius: "3px",
-        cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        fontWeight: name === S.cur ? "bold" : "normal"
-      });
-      btn.onclick = () => switchDoc(name);
-      dl.appendChild(btn);
-    }
+  
+  const groups = {};
+  for (const [name, doc] of S.docs.entries()) {
+    const f = doc.folder || "Uncategorized";
+    if (!groups[f]) groups[f] = [];
+    groups[f].push(name);
   }
+  
+  for (const [folder, names] of Object.entries(groups).sort()) {
+    if (dl) {
+      const fh = document.createElement("div");
+      fh.textContent = "📁 " + folder;
+      Object.assign(fh.style, { fontSize: "11px", fontWeight: "bold", color: "#666", marginTop: "8px", paddingLeft: "2px" });
+      dl.appendChild(fh);
+    }
+    const og = document.createElement("optgroup");
+    og.label = folder;
+    
+    for (const name of names.sort()) {
+      const o = document.createElement("option");
+      o.value = o.textContent = name;
+      if (name === S.cur) o.selected = true;
+      og.appendChild(o);
+      
+      if (dl) {
+        const btn = document.createElement("div");
+        Object.assign(btn.style, {
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "4px 4px", fontSize: "11px", background: name === S.cur ? "#e3f2fd" : "#fff",
+          border: "1px solid " + (name === S.cur ? "#90caf9" : "#ccc"), borderRadius: "3px",
+          cursor: "pointer"
+        });
+        
+        const label = document.createElement("span");
+        label.textContent = name; label.title = name;
+        Object.assign(label.style, { flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontWeight: name === S.cur ? "bold" : "normal" });
+        label.onclick = () => switchDoc(name);
+        
+        const acts = document.createElement("div");
+        acts.style.display = "flex"; acts.style.gap = "2px";
+        
+        const btnEdit = document.createElement("span");
+        btnEdit.textContent = "✏️"; btnEdit.title = "Move to folder";
+        btnEdit.style.cursor = "pointer";
+        btnEdit.onclick = (e) => {
+          e.stopPropagation();
+          const nf = prompt(`Move "${name}" to folder:`, S.docs.get(name).folder || "");
+          if (nf !== null) { S.docs.get(name).folder = nf.trim(); saveAllDocsToWorkbook(); refreshDocSelect(); }
+        };
+        
+        const btnRoll = document.createElement("span");
+        btnRoll.textContent = "🔄"; btnRoll.title = "Rollforward (Replace with new PDF)";
+        btnRoll.style.cursor = "pointer";
+        btnRoll.onclick = (e) => { e.stopPropagation(); startRollforward(name); };
+        
+        acts.appendChild(btnEdit); acts.appendChild(btnRoll);
+        btn.appendChild(label); btn.appendChild(acts);
+        dl.appendChild(btn);
+      }
+    }
+    sel.appendChild(og);
+  }
+}
+
+function startRollforward(oldName) {
+  if (!confirm(`Are you sure you want to replace "${oldName}"?\nAll snips pointing to this document will be automatically re-extracted from the new document using their original coordinates.`)) return;
+  
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/pdf";
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const newName = file.name;
+    try {
+      status(`Loading replacement document: ${newName}...`);
+      const bytes = await file.arrayBuffer();
+      const folder = S.docs.get(oldName).folder || "";
+      await addDoc(newName, bytes, false, folder);
+      await runRollforward(oldName, newName);
+      S.docs.delete(oldName);
+      saveAllDocsToWorkbook();
+      refreshDocSelect();
+    } catch(err) {
+      status("Rollforward failed: " + err.message, "err");
+    }
+  };
+  input.click();
+}
+
+async function runRollforward(oldName, newName) {
+  const newDoc = S.docs.get(newName);
+  if (!newDoc) return;
+  
+  let count = 0, errors = 0;
+  const updates = [];
+  for (const [key, rec] of S.registry.entries()) {
+    if (rec.doc === oldName) updates.push(rec);
+  }
+  
+  if (updates.length === 0) {
+    status(`No snips found for "${oldName}". Document replaced.`, "ok");
+    return;
+  }
+  
+  status(`Rollforward: Updating ${updates.length} snips...`);
+  
+  await Excel.run(async ctx => {
+    for (const rec of updates) {
+      try {
+        rec.doc = newName;
+        if (rec.page > newDoc.pdf.numPages) {
+          errors++;
+          rec.note = (rec.note ? rec.note + " | " : "") + `Rollforward Error: Page ${rec.page} missing`;
+          const targetRng = ctx.workbook.worksheets.getItem(rec.sheet).getRange(rec.addr);
+          targetRng.format.fill.color = FILL.exception;
+          continue;
+        }
+        
+        if (!rec.rect) continue;
+        const pageObj = await newDoc.pdf.getPage(rec.page);
+        
+        if (rec.mode === "image" || rec.mode === "table") {
+           errors++;
+           rec.note = (rec.note ? rec.note + " | " : "") + `Rollforward skipped for ${rec.mode} snip`;
+           const targetRng = ctx.workbook.worksheets.getItem(rec.sheet).getRange(rec.addr);
+           targetRng.format.fill.color = FILL.exception;
+           continue;
+        }
+        
+        const items = await extractItems(rec.rect, pageObj);
+        const raw = itemsToText(items);
+        
+        let newValue = null;
+        if (rec.mode === "text") {
+           newValue = coerce(raw);
+        } else if (rec.mode === "sum") {
+           const nums = raw ? parseNumbers(raw) : [];
+           newValue = nums.reduce((a,b)=>a+b, 0);
+        } else if (rec.mode === "validate" || rec.mode === "exception" || rec.mode === "tickmark") {
+           newValue = rec.value;
+        }
+        
+        if (newValue !== null && newValue !== "") {
+           rec.value = String(newValue);
+           rec.raw = raw.slice(0,500);
+           const targetRng = ctx.workbook.worksheets.getItem(rec.sheet).getRange(rec.addr);
+           targetRng.values = [[newValue]];
+           targetRng.format.fill.color = FILL[rec.mode];
+           count++;
+        }
+      } catch (err) {
+        errors++;
+      }
+    }
+  });
+  
+  await saveRegistry();
+  status(`Rollforward complete: ${count} updated, ${errors} skipped/errors.`, errors ? "err" : "ok");
 }
 
 async function switchDoc(name, page=1){
@@ -446,9 +590,9 @@ function toViewRect(pdfRect){
 "use strict";
 
 /* ---------------- text extraction ---------------- */
-async function extractItems(pdfRect){
+async function extractItems(pdfRect, pageObj = S.pageObj){
   // returns text items inside pdfRect: [{str,x,y,w,h}]
-  const tc = await S.pageObj.getTextContent();
+  const tc = await pageObj.getTextContent();
   const out = [];
   for (const it of tc.items){
     if (!it.str || !it.str.trim()) continue;
