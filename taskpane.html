@@ -170,8 +170,13 @@ async function arrayBufferToBase64Async(buffer) {
 }
 
 async function base64ToArrayBufferAsync(base64) {
-  const res = await fetch('data:application/pdf;base64,' + base64);
-  return await res.arrayBuffer();
+  const binary_string = window.atob(base64);
+  const len = binary_string.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary_string.charCodeAt(i);
+  }
+  return bytes.buffer;
 }
 
 async function saveAllDocsToWorkbook() {
