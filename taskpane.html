@@ -729,6 +729,8 @@ async function onSelectionChanged(){
       if (rec){
         $("cellSnipInfo").textContent = `${rec.mode} · ${rec.doc} p.${rec.page}`;
         $("btnGoto").disabled = false;
+        // Automatically pull up the document when the cell is clicked
+        gotoSource().catch(e => console.error(e));
       } else {
         $("cellSnipInfo").textContent = "";
         $("btnGoto").disabled = true;
