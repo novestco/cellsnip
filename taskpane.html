@@ -514,6 +514,26 @@ function getColLetter(colIdx) {
     return letter;
 }
 
+function getDateVariations(dateStr) {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  const mPad = m.toString().padStart(2, "0");
+  const dPad = day.toString().padStart(2, "0");
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const mName = monthNames[d.getMonth()];
+  const mFull = ["January","February","March","April","May","June","July","August","September","October","November","December"][d.getMonth()];
+  return [
+    `${m}/${day}/${y}`, `${mPad}/${dPad}/${y}`, `${y}-${mPad}-${dPad}`,
+    `${mName} ${day}, ${y}`, `${mName} ${day} ${y}`,
+    `${mFull} ${day}, ${y}`, `${mFull} ${day} ${y}`,
+    `${day}-${mName}-${y}`, `${day}-${mName}-${y.toString().slice(2)}`,
+    `${mPad}${dPad}${y}`
+  ];
+}
+
 async function autoSnip() {
   if (!S.docs.size) { status("Load a document first to auto-match.", "err"); return; }
   
@@ -540,11 +560,8 @@ async function autoSnip() {
         if (!validItems.length) continue;
         
         const items = validItems.map(it => ({
-            str: it.str,
-            x: it.transform[4],
-            y: it.transform[5],
-            w: it.width,
-            h: it.height || Math.abs(it.transform[3]) || 8
+            str: it.str, x: it.transform[4], y: it.transform[5],
+            w: it.width, h: it.height || Math.abs(it.transform[3]) || 8
         }));
         
         const rows = groupRows(items).map(rowItems => ({
@@ -563,16 +580,32 @@ async function autoSnip() {
         const textVal = rng.text[r][c].trim();
         if (val === "" || val === null || textVal === "") continue;
         
+        const isDate = /[a-z]/i.test(textVal) ? /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(textVal) : /[-/]/.test(textVal);
+        const dateVars = isDate ? getDateVariations(textVal) : null;
+        const num = parseNum(textVal);
+        
         let matched = null;
         for (const page of docPages) {
           for (const row of page.rows) {
+            // 1. Exact text inclusion
             if (row.text.includes(textVal)) {
               matched = { page, row }; break;
             }
-            if (typeof val === "number") {
-              const nums = parseNumbers(row.text);
-              if (nums.includes(val)) {
-                matched = { page, row }; break;
+            // 2. Date variations
+            if (dateVars) {
+              const rowLow = row.text.toLowerCase();
+              for (const dv of dateVars) {
+                if (rowLow.includes(dv.toLowerCase())) {
+                  matched = { page, row }; break;
+                }
+              }
+              if (matched) break;
+            }
+            // 3. Parsed number matching
+            if (num !== null) {
+              const match = page.rows.find(r2 => parseNum(r2.text) === num);
+              if (match) {
+                matched = { page, row: match }; break;
               }
             }
           }
@@ -601,22 +634,22 @@ async function autoSnip() {
             ts: new Date().toISOString()
           };
           S.registry.set(key, rec);
-          await appendRegistryRow(ctx, rec);
-          
-          try {
-            if (Office.context.requirements.isSetSupported("ExcelApi", "1.10")) {
-              ctx.workbook.comments.add(key, `[CellSnip AUTO-MATCH]\nSource: ${rec.doc}, p.${rec.page}\nNote: Auto-matched`);
-            }
-          } catch(_){}
-          
           matchCount++;
+          
+          if (Office.context.requirements.isSetSupported("ExcelApi", "1.10")) {
+            const comments = rng.worksheet.comments;
+            const cText = `Matched in ${matched.page.docName} (p.${matched.page.pageNum})`;
+            try { comments.add(key, cText); }catch(e){}
+          }
         }
       }
     }
-    await ctx.sync();
-    status(`Auto match complete: found ${matchCount} match(es).`, "ok");
+    
+    await saveRegistry();
+    status(`Auto-matched ${matchCount} cells.`, "ok");
   }).catch(e => {
-    status(`Auto match failed: ${e.message}`, "err");
+    console.error(e);
+    status("Auto-match failed: " + e.message, "err");
   });
 }
 
@@ -734,14 +767,44 @@ async function onSelectionChanged(){
       if (rec){
         $("cellSnipInfo").textContent = `${rec.mode} · ${rec.doc} p.${rec.page}`;
         $("btnGoto").disabled = false;
+        $("btnDeleteSnip").disabled = false;
         // Automatically pull up the document when the cell is clicked
         gotoSource().catch(e => console.error(e));
       } else {
         $("cellSnipInfo").textContent = "";
         $("btnGoto").disabled = true;
+        $("btnDeleteSnip").disabled = true;
       }
     });
   }catch(_){}
+}
+
+async function deleteSnip(){
+  const c = S.selectedCell; if (!c) return;
+  const key = `${c.sheet}!${c.addr}`;
+  if (!S.registry.has(key)) return;
+  S.registry.delete(key);
+  $("cellSnipInfo").textContent = "";
+  $("btnGoto").disabled = true;
+  $("btnDeleteSnip").disabled = true;
+  try {
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItem(c.sheet);
+      const rng = ws.getRange(c.addr);
+      rng.format.fill.clear();
+      if (Office.context.requirements.isSetSupported("ExcelApi", "1.10")) {
+        try {
+          const comment = ws.comments.getItemByCell(rng);
+          comment.delete();
+        } catch(e){}
+      }
+      await ctx.sync();
+    });
+  } catch(e) {
+    console.warn("Could not clear cell formatting:", e);
+  }
+  await saveRegistry();
+  status("Snip deleted.", "ok");
 }
 
 async function gotoSource(){
@@ -812,6 +875,7 @@ function wire(){
     };
   });
   $("btnGoto").onclick = gotoSource;
+  $("btnDeleteSnip").onclick = deleteSnip;
   $("btnAutoMatch").onclick = autoSnip;
   $("btnOverview").onclick = exportOverview;
 }
