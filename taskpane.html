@@ -1110,20 +1110,67 @@ async function gotoSource(){
 }
 
 /* ---------------- documentation export ---------------- */
+async function capturePdfRect(pdfRect, pageObj, scale=2.0) {
+  const vp = pageObj.getViewport({scale});
+  const c = document.createElement("canvas");
+  const p1 = vp.convertToViewportPoint(pdfRect[0], pdfRect[1]);
+  const p2 = vp.convertToViewportPoint(pdfRect[2], pdfRect[3]);
+  const x = Math.min(p1[0], p2[0]), y = Math.min(p1[1], p2[1]);
+  const w = Math.abs(p2[0] - p1[0]), h = Math.abs(p2[1] - p1[1]);
+  c.width = Math.ceil(w);
+  c.height = Math.ceil(h);
+  const ctx = c.getContext("2d");
+  ctx.translate(-x, -y);
+  await pageObj.render({canvasContext: ctx, viewport: vp}).promise;
+  return c.toDataURL("image/png");
+}
+
 async function exportOverview(){
   if (!S.registry.size){ status("No snips to document yet.", "err"); return; }
+  status("Generating Snip Overview with images (this may take a moment)...", "ok");
   await Excel.run(async ctx=>{
     let ws = ctx.workbook.worksheets.getItemOrNullObject("Snip Overview");
     await ctx.sync();
     if (!ws.isNullObject) ws.delete();
     ws = ctx.workbook.worksheets.add("Snip Overview");
-    const header = ["Cell","Type","Value","Source document","Page","Note / extracted text","Timestamp"];
-    const rows = [...S.registry.values()].map(r=>[
-      r.key, r.mode, r.value, r.doc, r.page, (r.note?r.note+" | ":"")+(r.raw||""), r.ts]);
+    const header = ["Cell","Type","Value","Source Image","Source document","Page","Note / extracted text","Timestamp"];
+    
     ws.getRangeByIndexes(0,0,1,header.length).values = [header];
     ws.getRangeByIndexes(0,0,1,header.length).format.font.bold = true;
-    ws.getRangeByIndexes(1,0,rows.length,header.length).values = rows;
+    
+    let rowIdx = 1;
+    for (const rec of S.registry.values()) {
+       const raw = (rec.raw || "").replace(/\n/g, " ").slice(0, 500);
+       const rowVals = [[rec.key, rec.mode, rec.value, "", rec.doc, rec.page, (rec.note?rec.note+" | ":"")+raw, rec.ts]];
+       const rng = ws.getRangeByIndexes(rowIdx, 0, 1, header.length);
+       rng.values = rowVals;
+       rng.format.rowHeight = 80;
+       rng.format.verticalAlignment = "Center";
+       
+       if (rec.rect && S.docs.has(rec.doc)) {
+         try {
+           const doc = S.docs.get(rec.doc);
+           const pageObj = await doc.pdf.getPage(rec.page);
+           const b64Url = await capturePdfRect(rec.rect, pageObj, 1.0);
+           const b64 = b64Url.split(",")[1];
+           
+           const imgCell = ws.getRangeByIndexes(rowIdx, 3, 1, 1);
+           imgCell.load(["top", "left"]);
+           await ctx.sync();
+           
+           const shape = ws.shapes.addImage(b64);
+           shape.left = imgCell.left + 5;
+           shape.top = imgCell.top + 5;
+           shape.lockAspectRatio = true;
+           shape.height = 70;
+         } catch(e) { console.error("Could not capture overview image", e); }
+       }
+       rowIdx++;
+    }
+    
+    ws.getRange("D:D").format.columnWidth = 200;
     ws.getUsedRange().format.autofitColumns();
+    ws.getRange("D:D").format.columnWidth = 200;
     ws.activate();
     await ctx.sync();
   });
