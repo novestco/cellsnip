@@ -673,15 +673,16 @@ async function writeSnip(mode, value, raw, pdfRect, note){
       target.values = norm;
       target.format.fill.color = FILL.table;
     } else if (mode === "validate" || mode === "exception"){
-      // don't overwrite the audited value — put the mark in the cell only if empty
-      rng.load("values"); await ctx.sync();
-      const existing = rng.values[0][0];
-      if (existing === "" || existing === null) rng.values = [[value]];
-      rng.format.fill.color = FILL[mode];
-      rng.format.font.color = mode === "validate" ? "#1e7a45" : "#b03a2e";
+      const targetRng = rng.getCell(0, 0);
+      targetRng.load("values"); await ctx.sync();
+      const existing = targetRng.values[0][0];
+      if (existing === "" || existing === null) targetRng.values = [[value]];
+      targetRng.format.fill.color = FILL[mode];
+      targetRng.format.font.color = mode === "validate" ? "#1e7a45" : "#b03a2e";
     } else {
-      rng.values = [[value]];
-      rng.format.fill.color = FILL[mode];
+      const targetRng = rng.getCell(0, 0);
+      targetRng.values = [[value]];
+      targetRng.format.fill.color = FILL[mode];
     }
 
     const rec = {
@@ -694,7 +695,7 @@ async function writeSnip(mode, value, raw, pdfRect, note){
       ts: new Date().toISOString()
     };
     S.registry.set(key, rec);
-    await appendRegistryRow(ctx, rec);
+    await saveRegistry();
 
     // source comment on the cell (ExcelApi 1.10+; ignore if unsupported)
     try{
@@ -716,21 +717,28 @@ async function writeSnip(mode, value, raw, pdfRect, note){
   });
 }
 
-async function appendRegistryRow(ctx, rec){
-  let ws = ctx.workbook.worksheets.getItemOrNullObject(REG_SHEET);
-  await ctx.sync();
-  if (ws.isNullObject){
-    ws = ctx.workbook.worksheets.add(REG_SHEET);
-    ws.getRange("A1:J1").values = [["Key","Sheet","Cell","Type","Value","Document","Page","RectPDF","Extracted","Timestamp"]];
-    ws.visibility = Excel.SheetVisibility.hidden;
-  }
-  const used = ws.getUsedRangeOrNullObject();
-  used.load("rowCount"); await ctx.sync();
-  const nextRow = used.isNullObject ? 1 : used.rowCount;   // 0-based index of next row
-  ws.getRangeByIndexes(nextRow, 0, 1, 10).values = [[
-    rec.key, rec.sheet, rec.addr, rec.mode, rec.value, rec.doc, rec.page,
-    JSON.stringify(rec.rect), rec.raw + (rec.note?` | note: ${rec.note}`:""), rec.ts
-  ]];
+async function saveRegistry(){
+  await Excel.run(async ctx => {
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(REG_SHEET);
+    await ctx.sync();
+    if (ws.isNullObject){
+      ws = ctx.workbook.worksheets.add(REG_SHEET);
+      ws.visibility = Excel.SheetVisibility.hidden;
+    }
+    ws.getRange().clear();
+    const headers = [["Key","Sheet","Cell","Mode","Value","Doc","Page","Rect","Raw"]];
+    const rows = [];
+    for (const rec of S.registry.values()){
+      rows.push([rec.key, rec.sheet, rec.addr, rec.mode, rec.value, rec.doc, rec.page, JSON.stringify(rec.rect), rec.raw]);
+    }
+    ws.getRange("A1:I1").values = headers;
+    const BATCH = 500;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const batchRows = rows.slice(i, i + BATCH);
+      ws.getRangeByIndexes(i + 1, 0, batchRows.length, 9).values = batchRows;
+    }
+    await ctx.sync();
+  }).catch(e => console.error("saveRegistry error:", e));
 }
 
 async function loadRegistry(){
