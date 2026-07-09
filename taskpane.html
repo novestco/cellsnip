@@ -112,6 +112,7 @@
   <div class="row">
     <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
     <span style="flex:1"></span>
+    <button id="btnBulkRoll" class="small" title="Batch replace multiple documents for the new month">Bulk Rollforward</button>
     <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
     <button id="btnOverview" class="small" title="Create a 'Reconciliation Backup' worksheet documenting every snip">Export backup</button>
   </div>
@@ -166,6 +167,17 @@
 </div>
 
 <input type="file" id="fileInput" accept="application/pdf" multiple>
+<input type="file" id="bulkRollInput" accept="application/pdf" multiple style="display:none">
+
+<div id="bulkRollModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
+  <div style="font-weight:bold; margin-bottom:8px;">Bulk Roll-Forward Wizard</div>
+  <p style="font-size:11px; color:#555; margin-bottom: 8px;">Map the new PDFs below to existing documents to replace them.</p>
+  <div id="bulkRollList" style="margin-bottom:8px; display:flex; flex-direction:column; gap:4px;"></div>
+  <div style="display:flex; justify-content:flex-end; gap:4px;">
+    <button id="btnCancelBulkRoll" class="small">Cancel</button>
+    <button id="btnRunBulkRoll" class="small" style="background:var(--ok); color:white;">Run Rollforward</button>
+  </div>
+</div>
 <script>
 /* =========================================================================
    CellSnip — DataSnipper-style snipping for Excel
@@ -407,21 +419,25 @@ function startRollforward(oldName) {
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const newName = file.name;
-    try {
-      status(`Loading replacement document: ${newName}...`);
-      const bytes = await file.arrayBuffer();
-      const folder = S.docs.get(oldName).folder || "";
-      await addDoc(newName, bytes, false, folder);
-      await runRollforward(oldName, newName);
-      S.docs.delete(oldName);
-      saveAllDocsToWorkbook();
-      refreshDocSelect();
-    } catch(err) {
-      status("Rollforward failed: " + err.message, "err");
-    }
+    await processRollforwardFile(oldName, file);
+    saveAllDocsToWorkbook();
+    refreshDocSelect();
   };
   input.click();
+}
+
+async function processRollforwardFile(oldName, file) {
+  const newName = file.name;
+  try {
+    status(`Loading replacement document: ${newName}...`);
+    const bytes = await file.arrayBuffer();
+    const folder = S.docs.has(oldName) ? (S.docs.get(oldName).folder || "") : "";
+    await addDoc(newName, bytes, false, folder);
+    await runRollforward(oldName, newName);
+    S.docs.delete(oldName);
+  } catch(err) {
+    status("Rollforward failed: " + err.message, "err");
+  }
 }
 
 async function runRollforward(oldName, newName) {
@@ -608,7 +624,7 @@ window.addEventListener("mouseup", async e=>{
   dragStart = null;
   selRect.style.display = "none";
   if (rect.w < 5 || rect.h < 5) return;   // ignore stray clicks
-  await handleSnip(rect);
+  await handleSnip(rect, e.shiftKey);
 });
 
 /* viewport(css px) rect -> PDF user-space rect [x1,y1,x2,y2] (y up) */
@@ -749,7 +765,7 @@ async function captureImageSnip(rect, scale=2.0) {
   return c.toDataURL("image/png");
 }
 
-async function handleSnip(rect){
+async function handleSnip(rect, shiftKey=false){
   if (!S.pageObj){ return; }
   const mode = S.mode;
   const pdfRect = toPdfRect(rect);
@@ -786,9 +802,12 @@ async function handleSnip(rect){
   } else if (mode === "tickmark"){
     value = $("selTickmark").value;
   }
-
-  try { await writeSnip(mode, value, raw, pdfRect, note); }
-  catch(e){ status("Excel write failed: " + (e.message||e), "err"); }
+  
+  try {
+    if (value !== undefined) {
+      await writeSnip(mode, value, raw, pdfRect, note, shiftKey);
+    }
+  } catch(e) { status("Excel write failed: " + (e.message||e), "err"); }
 }
 
 /* ---------------- auto match (document matching) ---------------- */
@@ -943,15 +962,24 @@ async function autoSnip() {
 /* ---------------- Excel write + registry ---------------- */
 const REG_SHEET = "_CellSnip";
 
-async function writeSnip(mode, value, raw, pdfRect, note){
+async function writeSnip(mode, value, raw, pdfRect, note, shiftKey=false){
   await Excel.run(async ctx=>{
     const rng = ctx.workbook.getSelectedRange();
-    rng.load(["address","rowIndex","columnIndex","worksheet/name"]);
+    rng.load(["address","rowIndex","columnIndex","worksheet/name","formulas"]);
     await ctx.sync();
 
     const sheet = rng.worksheet.name;
     const addr = rng.address.split("!").pop().split(":")[0];
     const key = `${sheet}!${addr}`;
+    
+    let isMulti = false;
+    let existingRec = null;
+    if (shiftKey && mode === "sum") {
+       existingRec = S.registry.get(key);
+       if (existingRec && existingRec.mode === "sum") {
+         isMulti = true;
+       }
+    }
 
     if (mode === "table" && Array.isArray(value)){
       const rows = value.length, cols = Math.max(...value.map(r=>r.length));
@@ -980,29 +1008,53 @@ async function writeSnip(mode, value, raw, pdfRect, note){
       }
     } else {
       const targetRng = rng.getCell(0, 0);
-      targetRng.values = [[value]];
+      if (isMulti) {
+        let oldForm = targetRng.formulas[0][0];
+        if (!oldForm.toString().startsWith("=")) oldForm = "=" + (Number(oldForm) || 0);
+        targetRng.formulas = [[oldForm + " + " + value]];
+        value = targetRng.formulas[0][0]; // track the formula in registry
+      } else {
+        targetRng.values = [[value]];
+      }
       targetRng.format.fill.color = FILL[mode];
     }
 
-    const rec = {
-      key, sheet, addr, mode,
-      value: Array.isArray(value) ? "(table)" : String(value),
-      doc: S.cur, page: S.page,
-      rect: pdfRect.map(n=>Math.round(n*100)/100),
-      raw: (raw||"").slice(0,500),
-      note: note || "",
-      ts: new Date().toISOString()
-    };
+    let rec;
+    if (isMulti) {
+      rec = existingRec;
+      if (!rec.multi) rec.multi = [{doc: rec.doc, page: rec.page, rect: rec.rect, raw: rec.raw, value: rec.value}];
+      rec.multi.push({doc: S.cur, page: S.page, rect: pdfRect.map(n=>Math.round(n*100)/100), raw: (raw||"").slice(0,500), value: String(value)});
+      rec.value = value;
+      rec.note = `Sum of ${rec.multi.length} multi-snips`;
+      rec.ts = new Date().toISOString();
+    } else {
+      rec = {
+        key, sheet, addr, mode,
+        value: Array.isArray(value) ? "(table)" : String(value),
+        doc: S.cur, page: S.page,
+        rect: pdfRect.map(n=>Math.round(n*100)/100),
+        raw: (raw||"").slice(0,500),
+        note: note || "",
+        ts: new Date().toISOString()
+      };
+    }
+    
     S.registry.set(key, rec);
     await saveRegistry();
 
-    // source comment on the cell (ExcelApi 1.10+; ignore if unsupported)
+    // source comment on the cell
     try{
       if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
         const comments = ctx.workbook.comments;
-        const body = `[CellSnip ${mode.toUpperCase()}]\nSource: ${S.cur}, p.${S.page}` +
+        let body = "";
+        if (isMulti) {
+           body = `[CellSnip MULTI-SUM]\n`;
+           rec.multi.forEach((s, idx) => body += `[${idx+1}] ${s.doc}, p.${s.page}\n`);
+        } else {
+           body = `[CellSnip ${mode.toUpperCase()}]\nSource: ${S.cur}, p.${S.page}` +
                      (note ? `\nNote: ${note}` : "") +
                      (mode==="sum" ? `\n${note||""}` : "");
+        }
         comments.add(`${sheet}!${addr}`, body.trim());
       }
     }catch(_){/* comment may already exist */}
@@ -1025,16 +1077,16 @@ async function saveRegistry(){
       ws.visibility = Excel.SheetVisibility.hidden;
     }
     ws.getRange().clear();
-    const headers = [["Key","Sheet","Cell","Mode","Value","Doc","Page","Rect","Raw"]];
+    const headers = [["Key","Sheet","Cell","Mode","Value","Doc","Page","Rect","Raw","Multi"]];
     const rows = [];
     for (const rec of S.registry.values()){
-      rows.push([rec.key, rec.sheet, rec.addr, rec.mode, rec.value, rec.doc, rec.page, JSON.stringify(rec.rect), rec.raw]);
+      rows.push([rec.key, rec.sheet, rec.addr, rec.mode, rec.value, rec.doc, rec.page, JSON.stringify(rec.rect), rec.raw, rec.multi ? JSON.stringify(rec.multi) : ""]);
     }
-    ws.getRange("A1:I1").values = headers;
+    ws.getRange("A1:J1").values = headers;
     const BATCH = 500;
     for (let i = 0; i < rows.length; i += BATCH) {
       const batchRows = rows.slice(i, i + BATCH);
-      ws.getRangeByIndexes(i + 1, 0, batchRows.length, 9).values = batchRows;
+      ws.getRangeByIndexes(i + 1, 0, batchRows.length, 10).values = batchRows;
     }
     await ctx.sync();
   }).catch(e => console.error("saveRegistry error:", e));
@@ -1052,7 +1104,7 @@ async function loadRegistry(){
       for (const r of rows){
         if (!r[0]) continue;
         S.registry.set(r[0], { key:r[0], sheet:r[1], addr:r[2], mode:r[3], value:r[4],
-          doc:r[5], page:Number(r[6])||1, rect: safeJson(r[7]), raw:r[8], ts:r[9] });
+          doc:r[5], page:Number(r[6])||1, rect: safeJson(r[7]), raw:r[8], multi: safeJson(r[9]) });
       }
     });
     if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
@@ -1080,12 +1132,32 @@ async function onSelectionChanged(){
         // Automatically pull up the document when the cell is clicked
         gotoSource().then(async () => {
           $("snipDetails").style.display = "block";
-          if (rec.rect) {
-            $("snipPreviewImg").src = "";
-            try {
-              const v = toViewRect(rec.rect);
-              $("snipPreviewImg").src = await captureImageSnip(v, 1.2);
-            } catch(e) {}
+          const container = $("snipPreviewImgContainer");
+          container.innerHTML = ""; // clear
+          
+          const snipsToRender = rec.multi ? rec.multi : [rec];
+          for (const s of snipsToRender) {
+            if (s.rect) {
+              try {
+                // if it's from another doc/page, we temporarily load it or just show an error if it's not the active page
+                // Wait, captureImageSnip relies on S.pageObj which is the *current* page.
+                // If it's a multi-snip, they might be on different pages. So we can't reliably render them unless we switch pages.
+                // For now, just render a box with text if we can't capture it.
+                if (s.doc === S.cur && s.page === S.page) {
+                  const v = toViewRect(s.rect);
+                  const img = document.createElement("img");
+                  img.style.maxWidth = "100%"; img.style.maxHeight = "140px"; img.style.display = "block"; img.style.margin = "4px auto";
+                  img.src = await captureImageSnip(v, 1.2);
+                  container.appendChild(img);
+                } else {
+                  const div = document.createElement("div");
+                  div.style.padding = "8px"; div.style.background = "#fff"; div.style.border = "1px dashed #ccc";
+                  div.style.fontSize = "10px"; div.style.margin = "4px 0";
+                  div.textContent = `[Sub-Snip on ${s.doc} p.${s.page}: ${s.value}]`;
+                  container.appendChild(div);
+                }
+              } catch(e) {}
+            }
           }
         }).catch(e => console.error(e));
       } else {
@@ -1182,32 +1254,38 @@ async function exportOverview(){
     
     let rowIdx = 1;
     for (const rec of S.registry.values()) {
-       const raw = (rec.raw || "").replace(/\n/g, " ").slice(0, 500);
-       const rowVals = [[rec.key, rec.mode, rec.value, "", rec.doc, rec.page, (rec.note?rec.note+" | ":"")+raw, rec.ts]];
-       const rng = ws.getRangeByIndexes(rowIdx, 0, 1, header.length);
-       rng.values = rowVals;
-       rng.format.rowHeight = 80;
-       rng.format.verticalAlignment = "Center";
+       const snipsToExport = rec.multi ? rec.multi : [rec];
+       let subIdx = 1;
        
-       if (rec.rect && S.docs.has(rec.doc)) {
-         try {
-           const doc = S.docs.get(rec.doc);
-           const pageObj = await doc.pdf.getPage(rec.page);
-           const b64Url = await capturePdfRect(rec.rect, pageObj, 1.0);
-           const b64 = b64Url.split(",")[1];
-           
-           const imgCell = ws.getRangeByIndexes(rowIdx, 3, 1, 1);
-           imgCell.load(["top", "left"]);
-           await ctx.sync();
-           
-           const shape = ws.shapes.addImage(b64);
-           shape.left = imgCell.left + 5;
-           shape.top = imgCell.top + 5;
-           shape.lockAspectRatio = true;
-           shape.height = 70;
-         } catch(e) { console.error("Could not capture overview image", e); }
+       for (const s of snipsToExport) {
+         const raw = (s.raw || "").replace(/\n/g, " ").slice(0, 500);
+         const displayKey = rec.multi ? `${rec.key} [${subIdx++}/${snipsToExport.length}]` : rec.key;
+         const rowVals = [[displayKey, rec.mode, s.value, "", s.doc, s.page, (rec.note && !rec.multi ? rec.note+" | ":"")+raw, rec.ts]];
+         const rng = ws.getRangeByIndexes(rowIdx, 0, 1, header.length);
+         rng.values = rowVals;
+         rng.format.rowHeight = 80;
+         rng.format.verticalAlignment = "Center";
+         
+         if (s.rect && S.docs.has(s.doc)) {
+           try {
+             const doc = S.docs.get(s.doc);
+             const pageObj = await doc.pdf.getPage(s.page);
+             const b64Url = await capturePdfRect(s.rect, pageObj, 1.0);
+             const b64 = b64Url.split(",")[1];
+             
+             const imgCell = ws.getRangeByIndexes(rowIdx, 3, 1, 1);
+             imgCell.load(["top", "left"]);
+             await ctx.sync();
+             
+             const shape = ws.shapes.addImage(b64);
+             shape.left = imgCell.left + 5;
+             shape.top = imgCell.top + 5;
+             shape.lockAspectRatio = true;
+             shape.height = 70;
+           } catch(e) { console.error("Could not capture overview image", e); }
+         }
+         rowIdx++;
        }
-       rowIdx++;
     }
     
     ws.getRange("D:D").format.columnWidth = 200;
@@ -1263,6 +1341,53 @@ function wire(){
   };
 
   $("btnOpen").onclick = ()=> $("fileInput").click();
+  
+  $("btnBulkRoll").onclick = () => $("bulkRollInput").click();
+  $("bulkRollInput").onchange = (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    const existingDocs = Array.from(S.docs.keys());
+    const list = $("bulkRollList");
+    list.innerHTML = "";
+    window._bulkRollFiles = files;
+    
+    for (const f of files) {
+      const row = document.createElement("div");
+      row.style.display = "flex"; row.style.gap = "4px"; row.style.alignItems = "center";
+      row.style.fontSize = "11px";
+      const lbl = document.createElement("div");
+      lbl.textContent = f.name;
+      lbl.style.flex = "1"; lbl.style.overflow = "hidden"; lbl.style.textOverflow = "ellipsis";
+      
+      const sel = document.createElement("select");
+      sel.className = "bulkRollMapSelect";
+      sel.style.width = "100px";
+      sel.innerHTML = '<option value="">-- Skip --</option>' + existingDocs.map(d => `<option value="${d}">${d}</option>`).join("");
+      
+      const bestMatch = existingDocs.find(d => d.substring(0, 4) === f.name.substring(0, 4));
+      if (bestMatch) sel.value = bestMatch;
+      
+      row.appendChild(lbl); row.appendChild(sel); list.appendChild(row);
+    }
+    $("bulkRollModal").style.display = "block";
+    e.target.value = "";
+  };
+  
+  $("btnCancelBulkRoll").onclick = () => $("bulkRollModal").style.display = "none";
+  $("btnRunBulkRoll").onclick = async () => {
+    $("bulkRollModal").style.display = "none";
+    const selects = document.querySelectorAll(".bulkRollMapSelect");
+    const files = window._bulkRollFiles || [];
+    for (let i = 0; i < files.length; i++) {
+      const oldName = selects[i].value;
+      if (!oldName) continue;
+      await processRollforwardFile(oldName, files[i]);
+    }
+    saveAllDocsToWorkbook();
+    refreshDocSelect();
+    status("Bulk Rollforward complete.", "ok");
+  };
+  
   $("fileInput").onchange = async e=>{
     for (const f of e.target.files){
       const bytes = await f.arrayBuffer();
