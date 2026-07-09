@@ -61,9 +61,9 @@
   #pdfCanvas{display:block}
   #overlay{position:absolute;inset:0;cursor:crosshair}
   #selRect{position:absolute;border:1.5px dashed var(--accent);background:rgba(184,134,11,.12);display:none;pointer-events:none}
-  .srcHighlight{position:absolute;border:2px solid var(--accent);background:rgba(184,134,11,.15);pointer-events:none;
-    animation:pulse 1.2s ease-in-out 3}
-  @keyframes pulse{50%{background:rgba(184,134,11,.35)}}
+  .srcHighlight{position:absolute;border:2px solid #b8860b;background:rgba(184,134,11,.15);pointer-events:none;}
+  @keyframes blinkFlash { 0%{opacity:1;} 50%{opacity:0.3;} 100%{opacity:1;} }
+  .srcHighlight.active{animation:blinkFlash 0.8s ease-in-out 3; z-index:9;}
   #emptyState{color:var(--muted);text-align:center;margin-top:80px;line-height:1.7;padding:0 20px}
   #emptyState .big{font-size:15px;color:var(--ink)}
   /* ---------- footer ---------- */
@@ -108,6 +108,11 @@
     <span style="flex:1"></span>
     <button id="btnAutoMatch" class="small" title="Automatically match selected cells against loaded documents">Auto Match</button>
     <button id="btnOverview" class="small" title="Create a 'Snip Overview' worksheet documenting every snip">Export overview</button>
+  </div>
+  <div class="row" style="background:#f4f4f4; padding: 4px; border-radius: 4px; margin-top: 4px; gap: 4px; align-items:center;">
+    <input type="text" id="inpSearch" placeholder="Smart Search..." style="flex:1; border: 1px solid #ccc; padding: 2px 6px;">
+    <button id="btnSearch" class="small">Search</button>
+    <button id="btnClearSearch" class="small" style="display:none">Clear</button>
   </div>
 </div>
 
@@ -156,6 +161,7 @@ const S = {
   registry: new Map(),    // "Sheet!A1" -> snip record
   selectedCell: null,     // { sheet, addr }
   ocrWorker: null,
+  searchResults: []
 };
 
 const $ = id => document.getElementById(id);
@@ -308,10 +314,50 @@ async function renderPage(){
                                  transform: dpr!==1 ? [dpr,0,0,dpr,0,0] : null});
   try{ await renderTask.promise; }catch(_){/* cancelled */}
   clearHighlights();
+  
+  // Render persistent snips
+  for (const rec of S.registry.values()) {
+    if (rec.doc === S.cur && rec.page === S.page && rec.rect) {
+      drawHighlight(rec.rect, rec.mode, rec.key);
+    }
+  }
+  
+  // Render search results
+  for (const sr of S.searchResults) {
+    if (sr.page === S.page) {
+      const hl = document.createElement("div");
+      hl.className = "searchHighlight";
+      const v = toViewRect(sr.rect);
+      Object.assign(hl.style, {
+        position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
+        backgroundColor: "rgba(255, 255, 0, 0.4)", border: "1.5px solid #eab308", pointerEvents: "none", zIndex: 5
+      });
+      $("overlay").appendChild(hl);
+    }
+  }
 }
 
 function clearHighlights(){
   document.querySelectorAll(".srcHighlight").forEach(el=>el.remove());
+  document.querySelectorAll(".searchHighlight").forEach(el=>el.remove());
+}
+
+function getHighlightColor(mode, isFill) {
+  const hex = (isFill ? FILL[mode] : BORDER[mode]) || (isFill ? "#EBF5FF" : "#3B82F6");
+  return isFill ? hex + "80" : hex;
+}
+
+function drawHighlight(rect, mode, key) {
+  const hl = document.createElement("div");
+  hl.className = "srcHighlight";
+  hl.dataset.key = key;
+  const v = toViewRect(rect);
+  Object.assign(hl.style, {
+    left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
+    borderColor: getHighlightColor(mode, false),
+    backgroundColor: getHighlightColor(mode, true)
+  });
+  $("overlay").appendChild(hl);
 }
 
 /* ---------------- drag selection on overlay ---------------- */
@@ -469,7 +515,8 @@ function itemsToTable(items){
 }
 
 /* ---------------- main snip handler ---------------- */
-const FILL = { text:"#DDEBF7", sum:"#E2EFDA", table:"#FCE4B0", validate:"#C6EFCE", exception:"#FFC7CE" };
+const FILL = { text:"#EBF5FF", sum:"#FEF9C3", table:"#F3E8FF", validate:"#DCFCE7", exception:"#FEE2E2" };
+const BORDER = { text:"#3B82F6", sum:"#EAB308", table:"#A855F7", validate:"#22C55E", exception:"#EF4444" };
 
 async function handleSnip(rect){
   if (!S.pageObj){ return; }
@@ -826,10 +873,12 @@ async function gotoSource(){
     await switchDoc(rec.doc, rec.page);
     if (rec.rect){
       const v = toViewRect(rec.rect);
-      const hl = document.createElement("div");
-      hl.className = "srcHighlight";
-      Object.assign(hl.style, {left:v.x+"px", top:v.y+"px", width:v.w+"px", height:v.h+"px"});
-      overlay.appendChild(hl);
+      const hl = document.querySelector(`.srcHighlight[data-key="${rec.key}"]`);
+      if (hl) {
+        hl.classList.remove("active");
+        void hl.offsetWidth; // trigger reflow
+        hl.classList.add("active");
+      }
       $("viewerWrap").scrollTo({top: Math.max(0, v.y - 120), behavior:"smooth"});
     }
     status(`Source: ${rec.doc}, page ${rec.page}`, "ok");
@@ -881,12 +930,53 @@ function wire(){
     b.onclick = ()=>{
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
       b.classList.add("active"); S.mode = b.dataset.mode;
+      updateSelRectColor();
     };
   });
+  
+  $("btnSearch").onclick = doSearch;
+  $("inpSearch").onkeyup = e => { if (e.key === "Enter") doSearch(); };
+  $("btnClearSearch").onclick = () => { $("inpSearch").value = ""; doSearch(); };
+  
+  function updateSelRectColor() {
+    $("selRect").style.borderColor = getHighlightColor(S.mode, false);
+    $("selRect").style.backgroundColor = getHighlightColor(S.mode, true);
+  }
+  updateSelRectColor();
+  
   $("btnGoto").onclick = gotoSource;
   $("btnDeleteSnip").onclick = deleteSnip;
   $("btnAutoMatch").onclick = autoSnip;
   $("btnOverview").onclick = exportOverview;
+}
+
+async function doSearch() {
+  const q = $("inpSearch").value.trim().toLowerCase();
+  S.searchResults = [];
+  if (!q) {
+    $("btnClearSearch").style.display = "none";
+    renderPage();
+    return;
+  }
+  
+  $("btnClearSearch").style.display = "inline-block";
+  status("Searching...");
+  const d = S.docs.get(S.cur);
+  if (!d) return;
+  
+  for (let p=1; p<=d.pdf.numPages; p++) {
+    const pageObj = await d.pdf.getPage(p);
+    const tc = await pageObj.getTextContent();
+    for (const it of tc.items) {
+      if (it.str && it.str.toLowerCase().includes(q)) {
+        const x = it.transform[4], y = it.transform[5];
+        const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
+        S.searchResults.push({ page: p, rect: [x, y, x+w, y+h] });
+      }
+    }
+  }
+  status(`Found ${S.searchResults.length} matches`, "ok");
+  renderPage();
 }
 
 Office.onReady(async info=>{
