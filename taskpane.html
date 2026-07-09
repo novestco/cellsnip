@@ -247,7 +247,7 @@ async function addDoc(name, bytes, persist=true){
       saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
     }
     refreshDocSelect();
-    if (!S.cur) switchDoc(name);
+    if (!S.cur) await switchDoc(name);
     status(`Loaded ${name} (${pdf.numPages} pages)`, "ok");
   }catch(e){ status(`Could not open ${name}: ${e.message}`, "err"); }
 }
@@ -263,11 +263,11 @@ function refreshDocSelect(){
   }
 }
 
-function switchDoc(name, page=1){
+async function switchDoc(name, page=1){
   if (!S.docs.has(name)) return;
   S.cur = name; S.page = page;
   refreshDocSelect();
-  renderPage();
+  await renderPage();
 }
 
 /* ---------------- rendering ---------------- */
@@ -740,22 +740,26 @@ async function onSelectionChanged(){
 }
 
 async function gotoSource(){
-  const c = S.selectedCell; if (!c) return;
-  const rec = S.registry.get(`${c.sheet}!${c.addr}`); if (!rec) return;
-  if (!S.docs.has(rec.doc)){
-    status(`Document "${rec.doc}" is not loaded — open it with + PDF.`, "err"); return;
+  try {
+    const c = S.selectedCell; if (!c) return;
+    const rec = S.registry.get(`${c.sheet}!${c.addr}`); if (!rec) return;
+    if (!S.docs.has(rec.doc)){
+      status(`Document "${rec.doc}" is not loaded — open it with + PDF.`, "err"); return;
+    }
+    await switchDoc(rec.doc, rec.page);
+    if (rec.rect){
+      const v = toViewRect(rec.rect);
+      const hl = document.createElement("div");
+      hl.className = "srcHighlight";
+      Object.assign(hl.style, {left:v.x+"px", top:v.y+"px", width:v.w+"px", height:v.h+"px"});
+      overlay.appendChild(hl);
+      $("viewerWrap").scrollTo({top: Math.max(0, v.y - 120), behavior:"smooth"});
+    }
+    status(`Source: ${rec.doc}, page ${rec.page}`, "ok");
+  } catch(e) {
+    console.error("gotoSource error", e);
+    status("Error jumping to source: " + e.message, "err");
   }
-  switchDoc(rec.doc, rec.page);
-  await renderPage();
-  if (rec.rect){
-    const v = toViewRect(rec.rect);
-    const hl = document.createElement("div");
-    hl.className = "srcHighlight";
-    Object.assign(hl.style, {left:v.x+"px", top:v.y+"px", width:v.w+"px", height:v.h+"px"});
-    overlay.appendChild(hl);
-    $("viewerWrap").scrollTo({top: Math.max(0, v.y - 120), behavior:"smooth"});
-  }
-  status(`Source: ${rec.doc}, page ${rec.page}`, "ok");
 }
 
 /* ---------------- documentation export ---------------- */
