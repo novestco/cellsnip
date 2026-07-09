@@ -816,6 +816,12 @@ Office.onReady(async info=>{
   await loadDocsFromWorkbook();
   await onSelectionChanged();
   
+  // Configure the document to automatically open this add-in when someone opens this Excel file
+  try {
+    Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
+    Office.context.document.settings.saveAsync();
+  } catch(e){}
+  
   if (!S.docs.size) status("Ready — open a PDF to start snipping.");
 });
 </script>
