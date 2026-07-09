@@ -159,9 +159,6 @@ const S = {
 
 const $ = id => document.getElementById(id);
 const status = (msg, cls) => { const s=$("status"); s.textContent=msg||""; s.className=cls||""; };
-
-};
-
 /* ---------------- Workbook sync: save/load PDFs to Excel ---------------- */
 async function arrayBufferToBase64Async(buffer) {
   return new Promise((resolve) => {
