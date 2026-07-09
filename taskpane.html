@@ -15,7 +15,7 @@
     --line:#d8d3c8;
     --accent:#b8860b;       /* snip amber */
     --ok:#1e7a45;           /* validation green */
-    --bad:#b03a2e;          /* exception red */
+    --bad:#b03a2e;          /* variance red */
     --blue:#2e6da4;         /* text snip */
     --sum:#3d7a3d;          /* sum snip */
     --muted:#7d8b99;
@@ -51,8 +51,8 @@
   .mode[data-mode=text].active{background:var(--blue);border-color:var(--blue)}
   .mode[data-mode=sum].active{background:var(--sum);border-color:var(--sum)}
   .mode[data-mode=table].active{background:var(--accent);border-color:var(--accent);color:#1b2a3a}
-  .mode[data-mode=validate].active{background:var(--ok);border-color:var(--ok)}
-  .mode[data-mode=exception].active{background:var(--bad);border-color:var(--bad)}
+  .mode[data-mode=tieout].active{background:var(--ok);border-color:var(--ok)}
+  .mode[data-mode=variance].active{background:var(--bad);border-color:var(--bad)}
   label.chk{display:flex;align-items:center;gap:4px;font-size:11px;color:#b9c6d2;cursor:pointer}
   /* ---------- viewer ---------- */
   #viewerWrap{flex:1;overflow:auto;position:relative;background:var(--paper);
@@ -101,19 +101,19 @@
     <button class="mode" data-mode="sum"   title="Drag a box: all numbers inside are summed into the selected cell">Sum</button>
     <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table</button>
     <button class="mode" data-mode="image" title="Drag a box: capture region as an image and insert into Excel">Img</button>
-    <button class="mode" data-mode="validate" title="Drag a box: marks the selected cell as validated (✓) against this source">✓</button>
-    <button class="mode" data-mode="exception" title="Drag a box: marks the selected cell as an exception (✗) with a note">✗</button>
-    <select id="selTickmark" style="width:40px; border:1px solid #ccc; background:white; margin-left:4px;">
-      <option value="A">A</option><option value="B">B</option><option value="C">C</option>
-      <option value="?">?</option><option value="!">!</option>
+    <button class="mode" data-mode="tieout" title="Drag a box: marks the selected cell as tied-out (✓) against this source">✓</button>
+    <button class="mode" data-mode="variance" title="Drag a box: marks the selected cell as a variance (Δ) with a note">Δ</button>
+    <select id="selTickmark" style="width:50px; border:1px solid #ccc; background:white; margin-left:4px;">
+      <option value="GL">GL</option><option value="TB">TB</option><option value="PY">PY</option>
+      <option value="BS">BS</option><option value="JE">JE</option><option value="SUB">SUB</option>
     </select>
     <button class="mode" data-mode="tickmark" title="Drag a box: insert a custom tickmark">TM</button>
   </div>
   <div class="row">
     <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
     <span style="flex:1"></span>
-    <button id="btnAutoMatch" class="small" title="Automatically match selected cells against loaded documents">Auto Match</button>
-    <button id="btnOverview" class="small" title="Create a 'Snip Overview' worksheet documenting every snip">Export overview</button>
+    <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
+    <button id="btnOverview" class="small" title="Create a 'Reconciliation Backup' worksheet documenting every snip">Export backup</button>
   </div>
   <div class="row" style="background:#f4f4f4; padding: 4px; border-radius: 4px; margin-top: 4px; gap: 4px; align-items:center;">
     <input type="text" id="inpSearch" placeholder="Smart Search..." style="flex:1; border: 1px solid #ccc; padding: 2px 6px;">
@@ -130,7 +130,7 @@
   <div id="viewerWrap">
     <div id="emptyState">
       <div class="big">No document loaded</div>
-      Click <b>+ PDF</b> to open one or more support documents.<br>
+      Click <b>+ PDF</b> to open invoices, bank statements, or subledgers.<br>
       Select a cell in Excel, pick a snip mode, then drag a box on the page.<br>
       Documents are saved securely in this workbook and will reload next time you open it.
     </div>
@@ -409,7 +409,7 @@ async function runRollforward(oldName, newName) {
           errors++;
           rec.note = (rec.note ? rec.note + " | " : "") + `Rollforward Error: Page ${rec.page} missing`;
           const targetRng = ctx.workbook.worksheets.getItem(rec.sheet).getRange(rec.addr);
-          targetRng.format.fill.color = FILL.exception;
+          targetRng.format.fill.color = FILL.variance;
           continue;
         }
         
@@ -420,7 +420,7 @@ async function runRollforward(oldName, newName) {
            errors++;
            rec.note = (rec.note ? rec.note + " | " : "") + `Rollforward skipped for ${rec.mode} snip`;
            const targetRng = ctx.workbook.worksheets.getItem(rec.sheet).getRange(rec.addr);
-           targetRng.format.fill.color = FILL.exception;
+           targetRng.format.fill.color = FILL.variance;
            continue;
         }
         
@@ -433,7 +433,7 @@ async function runRollforward(oldName, newName) {
         } else if (rec.mode === "sum") {
            const nums = raw ? parseNumbers(raw) : [];
            newValue = nums.reduce((a,b)=>a+b, 0);
-        } else if (rec.mode === "validate" || rec.mode === "exception" || rec.mode === "tickmark") {
+        } else if (rec.mode === "tieout" || rec.mode === "variance" || rec.mode === "tickmark") {
            newValue = rec.value;
         }
         
@@ -695,8 +695,8 @@ function itemsToTable(items){
 }
 
 /* ---------------- main snip handler ---------------- */
-const FILL = { text:"#EBF5FF", sum:"#FEF9C3", table:"#F3E8FF", image:"#FFEDD5", validate:"#DCFCE7", exception:"#FEE2E2", tickmark:"#F3F4F6" };
-const BORDER = { text:"#3B82F6", sum:"#EAB308", table:"#A855F7", image:"#F97316", validate:"#22C55E", exception:"#EF4444", tickmark:"#9CA3AF" };
+const FILL = { text:"#EBF5FF", sum:"#FEF9C3", table:"#F3E8FF", image:"#FFEDD5", tieout:"#DCFCE7", variance:"#FEE2E2", tickmark:"#F3F4F6" };
+const BORDER = { text:"#3B82F6", sum:"#EAB308", table:"#A855F7", image:"#F97316", tieout:"#22C55E", variance:"#EF4444", tickmark:"#9CA3AF" };
 
 async function captureImageSnip(rect, scale=2.0) {
   const vp2 = S.pageObj.getViewport({scale});
@@ -738,11 +738,11 @@ async function handleSnip(rect){
   } else if (mode === "table"){
     if (!items.length){ status("Table snip needs a text layer (not available via OCR).", "err"); return; }
     value = itemsToTable(items);
-  } else if (mode === "validate"){
+  } else if (mode === "tieout"){
     value = "✓";
-  } else if (mode === "exception"){
-    value = "✗";
-    note = prompt("Exception note:", "") || "";
+  } else if (mode === "variance"){
+    value = "Δ";
+    note = prompt("Variance explanation:", "") || "";
   } else if (mode === "tickmark"){
     value = $("selTickmark").value;
   }
@@ -929,14 +929,14 @@ async function writeSnip(mode, value, raw, pdfRect, note){
       const shape = rng.worksheet.shapes.addImage(base64);
       shape.left = targetRng.left;
       shape.top = targetRng.top;
-    } else if (mode === "validate" || mode === "exception" || mode === "tickmark"){
+    } else if (mode === "tieout" || mode === "variance" || mode === "tickmark"){
       const targetRng = rng.getCell(0, 0);
       targetRng.load("values"); await ctx.sync();
       const existing = targetRng.values[0][0];
       if (existing === "" || existing === null) targetRng.values = [[value]];
       targetRng.format.fill.color = FILL[mode];
       if (mode !== "tickmark") {
-        targetRng.format.font.color = mode === "validate" ? "#1e7a45" : "#b03a2e";
+        targetRng.format.font.color = mode === "tieout" ? "#1e7a45" : "#b03a2e";
       }
     } else {
       const targetRng = rng.getCell(0, 0);
