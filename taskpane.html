@@ -76,6 +76,14 @@
   #status{margin-top:5px;color:var(--muted);min-height:15px;font-size:11px}
   #status.err{color:var(--bad)} #status.ok{color:var(--ok)}
   input[type=file]{display:none}
+  .doc-badge{display:inline-block; font-size:9px; padding:1px 4px; border-radius:8px; margin-left:4px; font-weight:bold; vertical-align:middle;}
+  .doc-badge.snips{background:#e3f2fd; color:#2e6da4;}
+  .doc-badge.reviewed{background:#dcfce7; color:#1e7a45;}
+  .doc-badge.pending{background:#fef9c3; color:#92400e;}
+  .doc-badge.issue{background:#fee2e2; color:#b03a2e;}
+  .doc-status-btn{cursor:pointer; font-size:12px; padding:0 2px;}
+  .doc-status-btn:hover{transform:scale(1.2);}
+  .kbd{display:inline-block; font-size:9px; background:#3a5068; border:1px solid #4a6078; border-radius:2px; padding:0 3px; margin-left:3px; color:#b9c6d2; font-family:Consolas,monospace;}
 </style>
 </head>
 <body>
@@ -97,13 +105,13 @@
     <button id="btnFit" class="small" title="Fit width">Fit</button>
   </div>
   <div class="row" id="modes">
-    <button class="mode active" data-mode="text"  title="Drag a box: extracted text goes into the selected cell">Text</button>
-    <button class="mode" data-mode="sum"   title="Drag a box: all numbers inside are summed into the selected cell">Sum</button>
-    <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table</button>
-    <button class="mode" data-mode="image" title="Drag a box: capture region as an image and insert into Excel">Img</button>
+    <button class="mode active" data-mode="text"  title="Drag a box: extracted text goes into the selected cell">Text<span class="kbd">1</span></button>
+    <button class="mode" data-mode="sum"   title="Drag a box: all numbers inside are summed into the selected cell">Sum<span class="kbd">2</span></button>
+    <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table<span class="kbd">3</span></button>
+    <button class="mode" data-mode="image" title="Drag a box: capture region as an image and insert into Excel">Img<span class="kbd">4</span></button>
     <button class="mode" data-mode="template" title="Drag a box: define a field for a Form Extraction Template">Form Template</button>
-    <button class="mode" data-mode="tieout" title="Drag a box: marks the selected cell as tied-out (✓) against this source">✓</button>
-    <button class="mode" data-mode="variance" title="Drag a box: marks the selected cell as a variance (Δ) with a note">Δ</button>
+    <button class="mode" data-mode="tieout" title="Drag a box: marks the selected cell as tied-out (✓) against this source">✓<span class="kbd">5</span></button>
+    <button class="mode" data-mode="variance" title="Drag a box: marks the selected cell as a variance (Δ) with a note">Δ<span class="kbd">6</span></button>
     <select id="selTickmark" style="width:50px; border:1px solid #ccc; background:white; margin-left:4px;">
       <option value="GL">GL</option><option value="TB">TB</option><option value="PY">PY</option>
       <option value="BS">BS</option><option value="JE">JE</option><option value="SUB">SUB</option>
@@ -636,14 +644,48 @@ function refreshDocSelect(){
         Object.assign(label.style, { flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontWeight: name === S.cur ? "bold" : "normal", cursor: "pointer" });
         label.onclick = () => switchDoc(name);
         
+        // Snip count badge
+        const snipCount = Array.from(S.registry.values()).filter(r => r.doc === name).length;
+        if (snipCount > 0) {
+          const badge = document.createElement("span");
+          badge.className = "doc-badge snips";
+          badge.textContent = snipCount;
+          badge.title = `${snipCount} snip(s) from this document`;
+          label.appendChild(badge);
+        }
+        
+        // Review status badge
+        const docData = S.docs.get(name);
+        const st = docData.reviewStatus || "pending";
+        const statusBadge = document.createElement("span");
+        statusBadge.className = `doc-badge ${st}`;
+        statusBadge.textContent = st === "reviewed" ? "✓" : st === "issue" ? "!" : "…";
+        statusBadge.title = st.charAt(0).toUpperCase() + st.slice(1);
+        label.appendChild(statusBadge);
+        
         const acts = document.createElement("div");
         acts.style.display = "flex"; acts.style.gap = "2px";
+        
+        // Review status toggle button
+        const btnStatus = document.createElement("span");
+        btnStatus.className = "doc-status-btn";
+        btnStatus.textContent = st === "reviewed" ? "✅" : st === "issue" ? "❌" : "⏳";
+        btnStatus.title = "Cycle status: Pending → Reviewed → Issue";
+        btnStatus.onclick = (e) => {
+          e.stopPropagation();
+          const d = S.docs.get(name);
+          const cycle = { pending: "reviewed", reviewed: "issue", issue: "pending" };
+          d.reviewStatus = cycle[d.reviewStatus || "pending"];
+          saveAllDocsToWorkbook();
+          refreshDocSelect();
+        };
         
         const btnRoll = document.createElement("span");
         btnRoll.textContent = "🔄"; btnRoll.title = "Rollforward (Replace with new PDF)";
         btnRoll.style.cursor = "pointer";
         btnRoll.onclick = (e) => { e.stopPropagation(); startRollforward(name); };
         
+        acts.appendChild(btnStatus);
         acts.appendChild(btnRoll);
         btn.appendChild(label); btn.appendChild(acts);
         dl.appendChild(btn);
@@ -1340,7 +1382,20 @@ async function writeSnip(mode, value, raw, pdfRect, note, shiftKey=false){
     }
     
     S.registry.set(key, rec);
+    
+    // Warn if same value from same doc is already snipped to another cell
+    if (mode === "text" || mode === "sum") {
+      for (const [otherKey, otherRec] of S.registry.entries()) {
+        if (otherKey !== key && otherRec.doc === rec.doc && otherRec.page === rec.page && 
+            otherRec.value === rec.value && rec.value && rec.value !== "(table)" && rec.value !== "[Image]") {
+          status(`⚠ Duplicate: same value also snipped to ${otherKey}`, "err");
+          break;
+        }
+      }
+    }
+    
     await saveRegistry();
+    refreshDocSelect(); // update snip count badges
 
     // source comment on the cell
     try{
@@ -1961,6 +2016,21 @@ function wire(){
       updateSelRectColor();
       $("templateOptions").style.display = S.mode === "template" ? "flex" : "none";
     };
+  });
+  
+  // Keyboard shortcuts (1-6 for modes, Ctrl+G for go-to-source)
+  function switchMode(modeName) {
+    const btn = document.querySelector(`.mode[data-mode="${modeName}"]`);
+    if (btn) btn.click();
+  }
+  document.addEventListener("keydown", e => {
+    // Don't intercept when typing in inputs
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+    const modeMap = { "1": "text", "2": "sum", "3": "table", "4": "image", "5": "tieout", "6": "variance" };
+    if (modeMap[e.key]) { switchMode(modeMap[e.key]); e.preventDefault(); return; }
+    if (e.ctrlKey && e.key === "g") { e.preventDefault(); gotoSource(); return; }
+    if (e.key === "ArrowLeft" && !e.ctrlKey) { $("btnPrev").click(); }
+    if (e.key === "ArrowRight" && !e.ctrlKey) { $("btnNext").click(); }
   });
   
   $("btnSaveTemplate").onclick = () => {
