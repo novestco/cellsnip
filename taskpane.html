@@ -2119,18 +2119,50 @@ function wire(){
               try {
                 // we only support single page template extraction right now (page 1 usually)
                 const pageObj = await doc.pdf.getPage(field.page || 1);
-                const items = await extractItems(field.rect, pageObj);
-                const rowsGrouped = groupRows(items);
-                extracted = rowsGrouped.map(row => row.map(i => i.str).join(" ")).join("\n").trim();
+                
+                // Fix for old BUILT_IN_TEMPLATES which used [x, y, w, h]
+                let useRect = [...field.rect];
+                if (useRect[2] < useRect[0] || (useRect[2] - useRect[0] < 5 && useRect[2] > 0) || (useRect.length===4 && useRect[2] <= 400 && useRect[0] >= 50)) {
+                  // likely [x, y, w, h] where x2 would normally be larger than x1. 
+                  // Actually, just reliably check: if the template was built-in, they were [x, y, w, h].
+                  // Wait, let's just convert any [x, y, w, h] assuming top-down Y.
+                  // Since all user templates were generated via toPdfRect, they have x2 > x1 and y2 > y1 and they are absolute PDF points.
+                  // For built-ins, w is usually < 200, x is usually > 50.
+                  // Let's just normalize if it looks like [x, y, w, h]:
+                  if (useRect[2] < 300 && useRect[3] < 100) { 
+                     // Definitely [w, h]
+                     const [x, y, w, h] = useRect;
+                     // Convert top-down (x, y, w, h) to bottom-up (x1, y1, x2, y2)
+                     // assuming page height ~ 792 for built-in templates
+                     const ph = pageObj.view[3] || 792;
+                     useRect = [x, ph - y - h, x + w, ph - y];
+                  }
+                }
+                
+                let raw = "";
+                const items = await extractItems(useRect, pageObj);
+                if (items.length > 0) {
+                  const rowsGrouped = groupRows(items);
+                  raw = rowsGrouped.map(row => row.map(i => i.str).join(" ")).join("\n").trim();
+                } else if ($("chkOCR") && $("chkOCR").checked) {
+                  // OCR fallback
+                  const vp = pageObj.getViewport({ scale: S.scale || 1.0 });
+                  const a = vp.convertToViewportPoint(useRect[0], useRect[1]);
+                  const b = vp.convertToViewportPoint(useRect[2], useRect[3]);
+                  const vRect = { x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1]) };
+                  raw = await ocrRect(vRect, pageObj);
+                }
+                
+                extracted = raw ? (coerce(raw) ?? raw) : "";
                 
                 // Register snip for cross-referencing
                 const snipKey = `${safeSheetName}!${getColLetter(rowVals.length)}${rows.length + 2}`;
                 S.registry.set(snipKey, {
                   key: snipKey, sheet: safeSheetName, addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
-                  mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: field.rect, raw: extracted, ts: new Date().toISOString()
+                  mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: useRect, raw: raw, ts: new Date().toISOString()
                 });
                 
-              } catch(e) { console.error("Extraction error", e); }
+              } catch(e) { console.error("Extraction error", e); extracted = "ERROR"; }
               rowVals.push(extracted);
             }
             rows.push(rowVals);
