@@ -110,6 +110,12 @@
     </select>
     <button class="mode" data-mode="tickmark" title="Drag a box: insert a custom tickmark">TM</button>
   </div>
+  <div class="row" style="gap:4px; align-items:center;">
+    <label style="font-size:11px; color:#b9c6d2;">Materiality $</label>
+    <input type="number" id="inpMateriality" value="0" min="0" step="1" style="width:60px" title="Differences within this threshold are treated as tie-outs">
+    <span style="flex:1"></span>
+    <button id="btnSnipDashboard" class="small" title="Show snip coverage dashboard">📊 Dashboard</button>
+  </div>
   <div class="row" id="templateOptions" style="display:none; background:#e0f2fe; padding:4px; border-radius:4px; margin-top:4px;">
     <span style="font-size:11px; font-weight:bold;">Template Builder</span>
     <span id="lblTemplateFields" style="font-size:11px; margin-left:8px;">0 fields</span>
@@ -129,6 +135,8 @@
     <input type="text" id="inpSearch" placeholder="Smart Search..." style="flex:1; border: 1px solid #ccc; padding: 2px 6px;">
     <button id="btnSearch" class="small">Search</button>
     <button id="btnClearSearch" class="small" style="display:none">Clear</button>
+  </div>
+  <div id="searchResults" style="display:none; max-height:120px; overflow-y:auto; background:white; border:1px solid #ccc; border-radius:0 0 4px 4px; margin-top:-1px;">
   </div>
 </div>
 
@@ -201,6 +209,15 @@
     <button id="btnRunExtractForms" class="small" style="background:var(--ok); color:white;">Extract to Excel</button>
   </div>
 </div>
+
+<div id="dashboardModal" style="display:none; position:absolute; top:10px; left:10px; right:10px; bottom:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.3); padding:14px; z-index:999; overflow-y:auto; border-radius:6px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <div style="font-weight:bold; font-size:14px;">📊 Snip Dashboard</div>
+    <button id="btnCloseDashboard" class="small">✕ Close</button>
+  </div>
+  <div id="dashboardContent" style="font-size:12px;"></div>
+</div>
+
 <script>
 /* =========================================================================
    CellSnip — DataSnipper-style snipping for Excel
@@ -225,7 +242,8 @@ const S = {
   ocrWorker: null,
   searchResults: [],
   templates: new Map(),   // templateName -> [{fieldName, rect}]
-  currentTemplate: []     // fields being actively drawn
+  currentTemplate: [],    // fields being actively drawn
+  materiality: 0          // materiality threshold for tieout/variance
 };
 
 const BUILT_IN_TEMPLATES = {
@@ -1022,11 +1040,46 @@ async function handleSnip(rect, shiftKey=false){
   } else if (mode === "table"){
     if (!items.length){ status("Table snip needs a text layer (not available via OCR).", "err"); return; }
     value = itemsToTable(items);
-  } else if (mode === "tieout"){
-    value = "✓";
-  } else if (mode === "variance"){
-    value = "Δ";
-    note = prompt("Variance explanation:", "") || "";
+  } else if (mode === "tieout" || mode === "variance"){
+    // Compare PDF-extracted numeric value to current Excel cell value
+    const pdfNums = raw ? parseNumbers(raw) : [];
+    const pdfNum = pdfNums.length === 1 ? pdfNums[0] : null;
+    let resolvedMode = mode; // may flip tieout<->variance based on materiality
+    let comparisonNote = "";
+    try {
+      const cellVal = await Excel.run(async ctx => {
+        const rng = ctx.workbook.getSelectedRange();
+        rng.load("values"); await ctx.sync();
+        return rng.values[0][0];
+      });
+      const cellNum = (typeof cellVal === "number") ? cellVal : parseFloat(String(cellVal).replace(/[$,()\s]/g, ""));
+      if (pdfNum !== null && !isNaN(cellNum)) {
+        const diff = Math.abs(pdfNum - cellNum);
+        const mat = S.materiality || 0;
+        if (diff === 0) {
+          resolvedMode = "tieout";
+          comparisonNote = `Exact match: PDF=${pdfNum}, Cell=${cellNum}`;
+        } else if (mat > 0 && diff <= mat) {
+          resolvedMode = "tieout";
+          comparisonNote = `Within materiality ($${mat} threshold): PDF=${pdfNum}, Cell=${cellNum}, Diff=$${diff.toFixed(2)}`;
+        } else if (diff > 0) {
+          resolvedMode = "variance";
+          comparisonNote = `Variance: PDF=${pdfNum}, Cell=${cellNum}, Diff=$${diff.toFixed(2)}`;
+        }
+      }
+    } catch(_) {}
+    if (resolvedMode === "tieout") {
+      value = "✓";
+      note = comparisonNote || "";
+    } else {
+      value = "Δ";
+      const userNote = prompt("Variance explanation:", comparisonNote) || "";
+      note = userNote;
+    }
+    // Use the resolvedMode so writeSnip applies the correct fill/formatting
+    await writeSnip(resolvedMode, value, raw, pdfRect, note, shiftKey);
+    drawHighlight(pdfRect, resolvedMode, "");
+    return;
   } else if (mode === "tickmark"){
     value = $("selTickmark").value;
   } else if (mode === "template"){
@@ -1947,7 +2000,7 @@ function wire(){
   
   $("btnSearch").onclick = doSearch;
   $("inpSearch").onkeyup = e => { if (e.key === "Enter") doSearch(); };
-  $("btnClearSearch").onclick = () => { $("inpSearch").value = ""; doSearch(); };
+  $("btnClearSearch").onclick = () => { $("inpSearch").value = ""; $("searchResults").style.display = "none"; doSearch(); };
   
   function updateSelRectColor() {
     $("selRect").style.borderColor = getHighlightColor(S.mode, false);
@@ -1959,34 +2012,235 @@ function wire(){
   $("btnDeleteSnip").onclick = deleteSnip;
   $("btnAutoMatch").onclick = autoSnip;
   $("btnOverview").onclick = exportOverview;
+  $("btnSnipDashboard").onclick = buildDashboard;
+  $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
+  $("inpMateriality").onchange = e => { S.materiality = parseFloat(e.target.value) || 0; };
+}
+
+async function buildDashboard() {
+  $("dashboardModal").style.display = "block";
+  const dc = $("dashboardContent");
+  dc.innerHTML = '<div style="text-align:center; padding:20px; color:#999;">Building dashboard…</div>';
+
+  try {
+    // 1. Gather snip stats
+    const totalSnips = S.registry.size;
+    const byType = {};
+    const byDoc = {};
+    const snippedCells = {}; // "Sheet" -> Set of addresses
+    for (const [key, rec] of S.registry.entries()) {
+      byType[rec.mode] = (byType[rec.mode] || 0) + 1;
+      byDoc[rec.doc] = (byDoc[rec.doc] || 0) + 1;
+      if (!snippedCells[rec.sheet]) snippedCells[rec.sheet] = new Set();
+      snippedCells[rec.sheet].add(rec.addr);
+    }
+
+    // 2. Read workbook for coverage and unsnipped amounts
+    let sheetCoverage = [];
+    let unsnippedAmounts = [];
+
+    await Excel.run(async ctx => {
+      const sheets = ctx.workbook.worksheets;
+      sheets.load("items/name");
+      await ctx.sync();
+
+      for (const ws of sheets.items) {
+        if (ws.name.startsWith("_CellSnip") || ws.name === "Snip Overview") continue;
+        const used = ws.getUsedRangeOrNullObject();
+        used.load(["values", "rowCount", "columnCount", "rowIndex", "columnIndex"]);
+        await ctx.sync();
+        if (used.isNullObject) continue;
+
+        const totalCells = used.rowCount * used.columnCount;
+        const snipped = snippedCells[ws.name] ? snippedCells[ws.name].size : 0;
+        const pct = totalCells > 0 ? Math.round((snipped / totalCells) * 100) : 0;
+        sheetCoverage.push({ name: ws.name, total: totalCells, snipped, pct });
+
+        // Find large unsnipped numbers on each sheet
+        const vals = used.values;
+        const snipSet = snippedCells[ws.name] || new Set();
+        for (let r = 0; r < vals.length; r++) {
+          for (let c = 0; c < vals[r].length; c++) {
+            const v = vals[r][c];
+            if (typeof v === "number" && Math.abs(v) > 1000) {
+              const addr = getColLetter(used.columnIndex + c) + (used.rowIndex + r + 1);
+              if (!snipSet.has(addr)) {
+                unsnippedAmounts.push({ sheet: ws.name, addr, value: v });
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // Sort unsnipped by absolute value descending, take top 20
+    unsnippedAmounts.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+    unsnippedAmounts = unsnippedAmounts.slice(0, 20);
+
+    // 3. Render HTML
+    let html = '';
+
+    // Total snips
+    html += `<div style="display:flex; gap:12px; margin-bottom:14px;">`;
+    html += `<div style="background:#EBF5FF; padding:10px 16px; border-radius:6px; flex:1; text-align:center;">`;
+    html += `<div style="font-size:22px; font-weight:bold; color:#2e6da4;">${totalSnips}</div>`;
+    html += `<div style="font-size:10px; color:#666;">Total Snips</div></div>`;
+    html += `<div style="background:#DCFCE7; padding:10px 16px; border-radius:6px; flex:1; text-align:center;">`;
+    html += `<div style="font-size:22px; font-weight:bold; color:#1e7a45;">${byType['tieout']||0}</div>`;
+    html += `<div style="font-size:10px; color:#666;">Tie-outs ✓</div></div>`;
+    html += `<div style="background:#FEE2E2; padding:10px 16px; border-radius:6px; flex:1; text-align:center;">`;
+    html += `<div style="font-size:22px; font-weight:bold; color:#b03a2e;">${byType['variance']||0}</div>`;
+    html += `<div style="font-size:10px; color:#666;">Variances Δ</div></div>`;
+    html += `</div>`;
+
+    // By type breakdown
+    html += `<div style="font-weight:bold; margin-bottom:6px;">By Type</div>`;
+    html += `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">`;
+    const typeColors = { text:'#3B82F6', sum:'#EAB308', tieout:'#22C55E', variance:'#EF4444', image:'#F97316', table:'#A855F7', tickmark:'#9CA3AF' };
+    for (const [type, count] of Object.entries(byType).sort((a,b) => b[1]-a[1])) {
+      const color = typeColors[type] || '#999';
+      html += `<div style="background:${color}22; border:1px solid ${color}; border-radius:4px; padding:4px 10px; font-size:11px;">`;
+      html += `<span style="font-weight:bold;">${count}</span> ${type}</div>`;
+    }
+    html += `</div>`;
+
+    // By document breakdown
+    html += `<div style="font-weight:bold; margin-bottom:6px;">By Document</div>`;
+    html += `<table style="width:100%; border-collapse:collapse; margin-bottom:14px; font-size:11px;">`;
+    html += `<tr style="background:#f5f5f5;"><th style="text-align:left; padding:4px 6px; border-bottom:1px solid #ddd;">Document</th><th style="text-align:right; padding:4px 6px; border-bottom:1px solid #ddd;">Snips</th></tr>`;
+    for (const [doc, count] of Object.entries(byDoc).sort((a,b) => b[1]-a[1])) {
+      html += `<tr><td style="padding:3px 6px; border-bottom:1px solid #eee; overflow:hidden; text-overflow:ellipsis; max-width:180px;">${doc}</td>`;
+      html += `<td style="text-align:right; padding:3px 6px; border-bottom:1px solid #eee; font-weight:bold;">${count}</td></tr>`;
+    }
+    html += `</table>`;
+
+    // Coverage per sheet
+    html += `<div style="font-weight:bold; margin-bottom:6px;">Sheet Coverage</div>`;
+    if (sheetCoverage.length === 0) {
+      html += `<div style="color:#999; margin-bottom:14px;">No data sheets found.</div>`;
+    } else {
+      html += `<div style="margin-bottom:14px;">`;
+      for (const sc of sheetCoverage) {
+        const barColor = sc.pct > 60 ? '#22C55E' : sc.pct > 20 ? '#EAB308' : '#EF4444';
+        html += `<div style="margin-bottom:6px;">`;
+        html += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;">`;
+        html += `<span>${sc.name}</span><span>${sc.snipped}/${sc.total} cells (${sc.pct}%)</span></div>`;
+        html += `<div style="background:#eee; border-radius:3px; height:8px; overflow:hidden;">`;
+        html += `<div style="background:${barColor}; height:100%; width:${sc.pct}%; border-radius:3px; transition:width 0.3s;"></div>`;
+        html += `</div></div>`;
+      }
+      html += `</div>`;
+    }
+
+    // Unsnipped amounts
+    html += `<div style="font-weight:bold; margin-bottom:6px;">Unsnipped Amounts (cells &gt; $1,000 without snips)</div>`;
+    if (unsnippedAmounts.length === 0) {
+      html += `<div style="color:#22C55E; margin-bottom:14px;">✓ All large amounts appear to have supporting snips.</div>`;
+    } else {
+      html += `<table style="width:100%; border-collapse:collapse; margin-bottom:14px; font-size:11px;">`;
+      html += `<tr style="background:#FEF9C3;"><th style="text-align:left; padding:4px 6px; border-bottom:1px solid #ddd;">Cell</th><th style="text-align:right; padding:4px 6px; border-bottom:1px solid #ddd;">Amount</th></tr>`;
+      for (const ua of unsnippedAmounts) {
+        const formatted = ua.value.toLocaleString('en-US', { style:'currency', currency:'USD' });
+        html += `<tr><td style="padding:3px 6px; border-bottom:1px solid #eee;">${ua.sheet}!${ua.addr}</td>`;
+        html += `<td style="text-align:right; padding:3px 6px; border-bottom:1px solid #eee; font-weight:bold; color:#b03a2e;">${formatted}</td></tr>`;
+      }
+      html += `</table>`;
+      html += `<div style="font-size:10px; color:#999;">These cells may need supporting documentation.</div>`;
+    }
+
+    dc.innerHTML = html;
+  } catch (e) {
+    dc.innerHTML = `<div style="color:#b03a2e;">Error building dashboard: ${e.message}</div>`;
+    console.error("Dashboard error", e);
+  }
 }
 
 async function doSearch() {
   const q = $("inpSearch").value.trim().toLowerCase();
   S.searchResults = [];
+  const panel = $("searchResults");
+  
   if (!q) {
     $("btnClearSearch").style.display = "none";
+    panel.style.display = "none";
     renderPage();
     return;
   }
   
   $("btnClearSearch").style.display = "inline-block";
-  status("Searching...");
-  const d = S.docs.get(S.cur);
-  if (!d) return;
+  status("Searching all documents...");
   
-  for (let p=1; p<=d.pdf.numPages; p++) {
-    const pageObj = await d.pdf.getPage(p);
-    const tc = await pageObj.getTextContent();
-    for (const it of tc.items) {
-      if (it.str && it.str.toLowerCase().includes(q)) {
-        const x = it.transform[4], y = it.transform[5];
-        const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
-        S.searchResults.push({ page: p, rect: [x, y, x+w, y+h] });
+  const allResults = [];
+  
+  for (const [docName, docData] of S.docs.entries()) {
+    try {
+      const pdf = docData.pdf;
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const pageObj = await pdf.getPage(p);
+        const tc = await pageObj.getTextContent();
+        for (const it of tc.items) {
+          if (it.str && it.str.toLowerCase().includes(q)) {
+            const x = it.transform[4], y = it.transform[5];
+            const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
+            allResults.push({
+              docName,
+              page: p,
+              rect: [x, y, x + w, y + h],
+              text: it.str
+            });
+            // For highlighting on current doc
+            if (docName === S.cur) {
+              S.searchResults.push({ page: p, rect: [x, y, x + w, y + h] });
+            }
+          }
+        }
+      }
+    } catch(e) { console.error("Search error in", docName, e); }
+  }
+  
+  // Build results panel
+  const grouped = {};
+  if (allResults.length > 0) {
+    let html = '';
+    // Group by document
+    for (const r of allResults) {
+      if (!grouped[r.docName]) grouped[r.docName] = [];
+      grouped[r.docName].push(r);
+    }
+    
+    for (const [doc, results] of Object.entries(grouped)) {
+      html += `<div style="font-size:10px; font-weight:bold; padding:4px 6px; background:#f0f0f0; color:#555; border-bottom:1px solid #ddd;">${doc} (${results.length})</div>`;
+      // Show first 10 per doc
+      for (const r of results.slice(0, 10)) {
+        const preview = r.text.length > 40 ? r.text.substring(0, 40) + '...' : r.text;
+        html += `<div class="searchResultItem" data-doc="${r.docName}" data-page="${r.page}" 
+          style="padding:3px 6px; font-size:11px; cursor:pointer; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between;"
+          onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='white'">
+          <span>${preview}</span>
+          <span style="color:#999; font-size:10px;">p.${r.page}</span>
+        </div>`;
+      }
+      if (results.length > 10) {
+        html += `<div style="padding:3px 6px; font-size:10px; color:#999; font-style:italic;">...and ${results.length - 10} more in this document</div>`;
       }
     }
+    panel.innerHTML = html;
+    panel.style.display = "block";
+    
+    // Add click handlers
+    panel.querySelectorAll(".searchResultItem").forEach(el => {
+      el.onclick = () => {
+        const doc = el.getAttribute("data-doc");
+        const page = parseInt(el.getAttribute("data-page"));
+        switchDoc(doc, page);
+      };
+    });
+  } else {
+    panel.innerHTML = '<div style="padding:6px; font-size:11px; color:#999; text-align:center;">No results found</div>';
+    panel.style.display = "block";
   }
-  status(`Found ${S.searchResults.length} matches`, "ok");
+  
+  status(`Found ${allResults.length} match(es) across ${Object.keys(grouped).length} document(s)`, "ok");
   renderPage();
 }
 
