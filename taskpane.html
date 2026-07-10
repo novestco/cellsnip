@@ -578,7 +578,22 @@ async function addDoc(name, bytes, persist=true, folder=""){
     }
     refreshDocSelect();
     if (!S.cur) await switchDoc(name);
-    status(`Loaded ${name} (${pdf.numPages} pages)`, "ok");
+    status(`Loaded ${name} (${pdf.numPages} pages) — detecting template...`, "ok");
+    
+    // Auto-detect and assign template
+    try {
+      const best = await autoDetectTemplate(name);
+      if (best) {
+        S.docs.get(name).assignedTemplate = best;
+        status(`${name}: auto-assigned "${best}"`, "ok");
+      } else {
+        S.docs.get(name).assignedTemplate = "";
+        status(`Loaded ${name} (${pdf.numPages} pages) — no template match`, "ok");
+      }
+      refreshDocSelect();
+    } catch(e) {
+      console.error("Auto-detect on upload failed", e);
+    }
   }catch(e){ status(`Could not open ${name}: ${e.message}`, "err"); }
 }
 
@@ -697,7 +712,51 @@ function refreshDocSelect(){
         
         acts.appendChild(btnStatus);
         acts.appendChild(btnRoll);
+        // Assigned template label
+        const docData2 = S.docs.get(name);
+        const tplName = docData2.assignedTemplate || "";
+        const tplRow = document.createElement("div");
+        tplRow.style.cssText = "font-size:9px; color:#666; margin-top:2px; display:flex; align-items:center; gap:2px; cursor:pointer;";
+        tplRow.title = tplName ? `Assigned: ${tplName} (click to change)` : "No template assigned (click to assign)";
+        tplRow.innerHTML = tplName 
+          ? `<span style="color:var(--ok);">📋</span> <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:75px;">${tplName}</span>`
+          : `<span style="color:#999;">📋 none</span>`;
+        tplRow.onclick = (e) => {
+          e.stopPropagation();
+          // Show a small inline dropdown to pick a template
+          const existing = tplRow.querySelector("select");
+          if (existing) return; // already open
+          tplRow.innerHTML = "";
+          const sel2 = document.createElement("select");
+          sel2.style.cssText = "font-size:9px; width:100%;";
+          sel2.innerHTML = `<option value="">— none —</option>`;
+          // Group by category
+          const cats = {};
+          for (const [tn, td] of S.templates.entries()) {
+            const cat = (td && td.category) || "User Templates";
+            if (!cats[cat]) cats[cat] = [];
+            cats[cat].push(tn);
+          }
+          for (const [cat, tns] of Object.entries(cats)) {
+            let ogHtml = `<optgroup label="${cat}">`;
+            for (const tn of tns) {
+              const selected = tn === tplName ? " selected" : "";
+              ogHtml += `<option value="${tn}"${selected}>${tn}</option>`;
+            }
+            ogHtml += `</optgroup>`;
+            sel2.innerHTML += ogHtml;
+          }
+          tplRow.appendChild(sel2);
+          sel2.focus();
+          sel2.onchange = () => {
+            S.docs.get(name).assignedTemplate = sel2.value;
+            refreshDocSelect();
+          };
+          sel2.onblur = () => refreshDocSelect();
+        };
+        
         btn.appendChild(label); btn.appendChild(acts);
+        btn.appendChild(tplRow);
         dl.appendChild(btn);
       }
     }
@@ -1988,21 +2047,16 @@ function wire(){
     
     $("formExtractModal").style.display = "block";
     const list = $("formDocList");
-    list.innerHTML = `<div style="text-align:center; font-style:italic;">Detecting templates...</div>`;
     
-    const results = [];
-    for (const docName of S.docs.keys()) {
-       const best = await autoDetectTemplate(docName);
-       results.push({ docName, best });
-    }
-    
+    // Use pre-assigned templates (instant, no re-scan needed)
     let html = "";
-    for (const res of results) {
-       const selHtml = buildTemplateSelectHTML(res.best);
-       const badge = res.best ? `<span style="color:var(--ok); font-size:10px; margin-left:4px;" title="Auto-detected">✨</span>` : "";
+    for (const [docName, docData] of S.docs.entries()) {
+       const best = docData.assignedTemplate || "";
+       const selHtml = buildTemplateSelectHTML(best);
+       const badge = best ? `<span style="color:var(--ok); font-size:10px; margin-left:4px;" title="Auto-assigned: ${best}">📋</span>` : "";
        html += `
-         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #eee; padding-bottom:4px;" class="formDocRow" data-doc="${res.docName}">
-           <div style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:140px;" title="${res.docName}">${res.docName}${badge}</div>
+         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #eee; padding-bottom:4px;" class="formDocRow" data-doc="${docName}">
+           <div style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:140px;" title="${docName}">${docName}${badge}</div>
            ${selHtml}
          </div>
        `;
