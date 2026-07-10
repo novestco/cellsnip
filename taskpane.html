@@ -234,6 +234,25 @@ const S = {
   currentTemplate: []     // fields being actively drawn
 };
 
+const BUILT_IN_TEMPLATES = {
+  "Standard AWS Invoice": [
+    { fieldName: "Invoice Number", rect: [415, 690, 150, 15], page: 1 },
+    { fieldName: "Invoice Date", rect: [415, 675, 150, 15], page: 1 },
+    { fieldName: "Total Amount", rect: [415, 660, 150, 15], page: 1 }
+  ],
+  "IRS W-2": [
+    { fieldName: "Box 1 Wages", rect: [350, 680, 100, 20], page: 1 },
+    { fieldName: "Box 2 Fed Tax", rect: [450, 680, 100, 20], page: 1 },
+    { fieldName: "Box 3 SS Wages", rect: [350, 640, 100, 20], page: 1 }
+  ],
+  "Generic Bank Statement": [
+    { fieldName: "Account Number", rect: [400, 720, 150, 20], page: 1 },
+    { fieldName: "Statement Date", rect: [400, 700, 150, 20], page: 1 },
+    { fieldName: "Beginning Balance", rect: [400, 650, 100, 20], page: 1 },
+    { fieldName: "Ending Balance", rect: [400, 630, 100, 20], page: 1 }
+  ]
+};
+
 const $ = id => document.getElementById(id);
 const status = (msg, cls) => { const s=$("status"); s.textContent=msg||""; s.className=cls||""; };
 /* ---------------- Workbook sync: save/load PDFs to Excel ---------------- */
@@ -1199,6 +1218,11 @@ async function loadRegistry(){
     });
     if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
   }catch(e){ /* first run */ }
+  
+  // Inject built-in templates if not already present
+  Object.entries(BUILT_IN_TEMPLATES).forEach(([name, fields]) => {
+    if (!S.templates.has(name)) S.templates.set(name, fields);
+  });
 }
 const safeJson = s => { try{ return JSON.parse(s); }catch(_){ return null; } };
 
