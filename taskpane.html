@@ -101,6 +101,7 @@
     <button class="mode" data-mode="sum"   title="Drag a box: all numbers inside are summed into the selected cell">Sum</button>
     <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table</button>
     <button class="mode" data-mode="image" title="Drag a box: capture region as an image and insert into Excel">Img</button>
+    <button class="mode" data-mode="template" title="Drag a box: define a field for a Form Extraction Template">Form Template</button>
     <button class="mode" data-mode="tieout" title="Drag a box: marks the selected cell as tied-out (✓) against this source">✓</button>
     <button class="mode" data-mode="variance" title="Drag a box: marks the selected cell as a variance (Δ) with a note">Δ</button>
     <select id="selTickmark" style="width:50px; border:1px solid #ccc; background:white; margin-left:4px;">
@@ -109,10 +110,18 @@
     </select>
     <button class="mode" data-mode="tickmark" title="Drag a box: insert a custom tickmark">TM</button>
   </div>
+  <div class="row" id="templateOptions" style="display:none; background:#e0f2fe; padding:4px; border-radius:4px; margin-top:4px;">
+    <span style="font-size:11px; font-weight:bold;">Template Builder</span>
+    <span id="lblTemplateFields" style="font-size:11px; margin-left:8px;">0 fields</span>
+    <span style="flex:1"></span>
+    <button id="btnSaveTemplate" class="small">Save Template</button>
+    <button id="btnClearTemplate" class="small">Clear</button>
+  </div>
   <div class="row">
     <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
     <span style="flex:1"></span>
     <button id="btnBulkRoll" class="small" title="Batch replace multiple documents for the new month">Bulk Rollforward</button>
+    <button id="btnExtractForms" class="small" title="Apply a Form Template across multiple documents">Extract Forms</button>
     <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
     <button id="btnOverview" class="small" title="Create a 'Reconciliation Backup' worksheet documenting every snip">Export backup</button>
   </div>
@@ -178,6 +187,26 @@
     <button id="btnRunBulkRoll" class="small" style="background:var(--ok); color:white;">Run Rollforward</button>
   </div>
 </div>
+
+<div id="formExtractModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
+  <div style="font-weight:bold; margin-bottom:8px;">Extract Forms</div>
+  <p style="font-size:11px; color:#555; margin-bottom: 8px;">Select a template and the documents to extract data from.</p>
+  
+  <div style="margin-bottom: 8px;">
+    <label style="font-size:11px; font-weight:bold;">Template:</label>
+    <select id="selFormTemplate" style="width:100%; font-size:11px; padding:2px;"></select>
+  </div>
+  
+  <div style="margin-bottom: 8px;">
+    <label style="font-size:11px; font-weight:bold;">Documents to process:</label>
+    <div id="formDocList" style="max-height: 120px; overflow-y:auto; border:1px solid #ccc; padding:4px; font-size:11px; display:flex; flex-direction:column; gap:2px;"></div>
+  </div>
+  
+  <div style="display:flex; justify-content:flex-end; gap:4px;">
+    <button id="btnCancelExtractForms" class="small">Cancel</button>
+    <button id="btnRunExtractForms" class="small" style="background:var(--ok); color:white;">Extract to Excel</button>
+  </div>
+</div>
 <script>
 /* =========================================================================
    CellSnip — DataSnipper-style snipping for Excel
@@ -198,10 +227,11 @@ const S = {
   scale: 1.2,
   fitWidth: true,
   mode: "text",
-  registry: new Map(),    // "Sheet!A1" -> snip record
   selectedCell: null,     // { sheet, addr }
   ocrWorker: null,
-  searchResults: []
+  searchResults: [],
+  templates: new Map(),   // templateName -> [{fieldName, rect}]
+  currentTemplate: []     // fields being actively drawn
 };
 
 const $ = id => document.getElementById(id);
@@ -801,6 +831,33 @@ async function handleSnip(rect, shiftKey=false){
     note = prompt("Variance explanation:", "") || "";
   } else if (mode === "tickmark"){
     value = $("selTickmark").value;
+  } else if (mode === "template"){
+    const fieldName = prompt("Enter Field Name for this template zone (e.g., 'Invoice Total'):");
+    if (!fieldName) {
+      status("Template field canceled.", "err");
+      return;
+    }
+    S.currentTemplate.push({ fieldName, rect: pdfRect, page: S.page });
+    $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
+    status(`Added field "${fieldName}" to current template.`, "ok");
+    
+    // Draw a visual indicator on the canvas
+    const overlay = document.createElement("div");
+    const v = toViewRect(pdfRect);
+    Object.assign(overlay.style, {
+      position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
+      border: "2px solid #0284c7", background: "rgba(2, 132, 199, 0.2)",
+      pointerEvents: "none", zIndex: 10
+    });
+    const lbl = document.createElement("div");
+    lbl.textContent = fieldName;
+    Object.assign(lbl.style, {
+      background: "#0284c7", color: "white", fontSize: "10px", padding: "2px 4px", position: "absolute", top: "-14px", left: "-2px"
+    });
+    overlay.appendChild(lbl);
+    $("overlay").appendChild(overlay);
+    
+    return; // Don't write to Excel
   }
   
   try {
@@ -1088,6 +1145,25 @@ async function saveRegistry(){
       const batchRows = rows.slice(i, i + BATCH);
       ws.getRangeByIndexes(i + 1, 0, batchRows.length, 10).values = batchRows;
     }
+    
+    // Save Templates
+    let wsTpl = ctx.workbook.worksheets.getItemOrNullObject("_CellSnip_Templates");
+    await ctx.sync();
+    if (wsTpl.isNullObject){
+      wsTpl = ctx.workbook.worksheets.add("_CellSnip_Templates");
+      wsTpl.visibility = Excel.SheetVisibility.hidden;
+    }
+    wsTpl.getRange().clear();
+    const tplHeaders = [["TemplateName", "Data"]];
+    const tplRows = [];
+    for (const [name, fields] of S.templates.entries()){
+      tplRows.push([name, JSON.stringify(fields)]);
+    }
+    if (tplRows.length > 0) {
+      wsTpl.getRangeByIndexes(0, 0, 1, 2).values = tplHeaders;
+      wsTpl.getRangeByIndexes(1, 0, tplRows.length, 2).values = tplRows;
+    }
+    
     await ctx.sync();
   }).catch(e => console.error("saveRegistry error:", e));
 }
@@ -1105,6 +1181,20 @@ async function loadRegistry(){
         if (!r[0]) continue;
         S.registry.set(r[0], { key:r[0], sheet:r[1], addr:r[2], mode:r[3], value:r[4],
           doc:r[5], page:Number(r[6])||1, rect: safeJson(r[7]), raw:r[8], multi: safeJson(r[9]) });
+      }
+      
+      // Load Templates
+      const wsTpl = ctx.workbook.worksheets.getItemOrNullObject("_CellSnip_Templates");
+      await ctx.sync();
+      if (!wsTpl.isNullObject) {
+        const usedTpl = wsTpl.getUsedRangeOrNullObject(); usedTpl.load("values"); await ctx.sync();
+        if (!usedTpl.isNullObject) {
+           const tplRows = usedTpl.values.slice(1);
+           for (const r of tplRows) {
+             if (!r[0]) continue;
+             S.templates.set(r[0], safeJson(r[1]) || []);
+           }
+        }
       }
     });
     if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
@@ -1388,6 +1478,120 @@ function wire(){
     status("Bulk Rollforward complete.", "ok");
   };
   
+  $("btnExtractForms").onclick = () => {
+    if (S.templates.size === 0) {
+      status("No templates available. Use 'Form Template' mode to create one.", "err");
+      return;
+    }
+    if (S.docs.size === 0) {
+      status("No documents available.", "err");
+      return;
+    }
+    const sel = $("selFormTemplate");
+    sel.innerHTML = "";
+    for (const name of S.templates.keys()) sel.innerHTML += `<option value="${name}">${name}</option>`;
+    
+    const list = $("formDocList");
+    list.innerHTML = "";
+    for (const docName of S.docs.keys()) {
+      list.innerHTML += `<label><input type="checkbox" class="chkFormDoc" value="${docName}" checked> ${docName}</label>`;
+    }
+    $("formExtractModal").style.display = "block";
+  };
+  
+  $("btnCancelExtractForms").onclick = () => $("formExtractModal").style.display = "none";
+  $("btnRunExtractForms").onclick = async () => {
+    $("formExtractModal").style.display = "none";
+    const tplName = $("selFormTemplate").value;
+    const template = S.templates.get(tplName);
+    if (!template) return;
+    
+    const selectedDocs = Array.from(document.querySelectorAll(".chkFormDoc"))
+      .filter(cb => cb.checked)
+      .map(cb => cb.value);
+      
+    if (!selectedDocs.length) return;
+    
+    status("Extracting form data...", "ok");
+    try {
+      await Excel.run(async ctx => {
+        let ws = ctx.workbook.worksheets.getItemOrNullObject("Form Extraction");
+        await ctx.sync();
+        if (!ws.isNullObject) ws.delete();
+        ws = ctx.workbook.worksheets.add("Form Extraction");
+        
+        // Write headers
+        const headers = ["Document", ...template.map(t => t.fieldName)];
+        ws.getRangeByIndexes(0, 0, 1, headers.length).values = [headers];
+        ws.getRangeByIndexes(0, 0, 1, headers.length).format.font.bold = true;
+        
+        // Extract data
+        const rows = [];
+        for (const docName of selectedDocs) {
+          const doc = S.docs.get(docName);
+          const rowVals = [docName];
+          for (const field of template) {
+            let extracted = "";
+            try {
+              // we only support single page template extraction right now (page 1 usually)
+              const pageObj = await doc.pdf.getPage(field.page || 1);
+              const vp = pageObj.getViewport({ scale: 1.0 }); // Use scale 1.0 for normalized rects?
+              // Wait, extractItems uses our pdfRect format [x,y,w,h] which is in pt.
+              const tc = await pageObj.getTextContent();
+              // Calculate rect intersections
+              let pageItems = tc.items.map(it => {
+                if (!it.transform || it.transform.length < 6) return null;
+                return { str: it.str, x: it.transform[4], y: vp.viewBox[3] - it.transform[5], w: it.width, h: it.height };
+              }).filter(Boolean);
+              
+              const [rx, ry, rw, rh] = field.rect;
+              const inside = pageItems.filter(i => {
+                const cx = i.x + i.w/2, cy = i.y - i.h/2;
+                return cx >= rx && cx <= rx+rw && cy >= ry && cy <= ry+rh;
+              });
+              extracted = inside.map(i=>i.str).join(" ").trim();
+              
+              // Register snip for cross-referencing
+              const snipKey = `Form Extraction!${getColLetter(rowVals.length)}${rows.length + 2}`;
+              S.registry.set(snipKey, {
+                key: snipKey, sheet: "Form Extraction", addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
+                mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: field.rect, raw: extracted, ts: new Date().toISOString()
+              });
+              
+            } catch(e) { console.error("Extraction error", e); }
+            rowVals.push(extracted);
+          }
+          rows.push(rowVals);
+        }
+        
+        if (rows.length) {
+          ws.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
+          ws.getUsedRange().format.autofitColumns();
+        }
+        
+        // Add comments for cross-reference
+        if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
+          for (let r = 0; r < rows.length; r++) {
+            for (let c = 1; c < headers.length; c++) {
+              const cell = ws.getRangeByIndexes(r + 1, c, 1, 1);
+              const docName = rows[r][0];
+              const field = template[c - 1];
+              ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${field.page||1}`);
+            }
+          }
+        }
+        
+        ws.activate();
+        await ctx.sync();
+      });
+      await saveRegistry();
+      status("Form extraction complete!", "ok");
+    } catch(e) {
+      console.error(e);
+      status("Extraction failed: " + e.message, "err");
+    }
+  };
+  
   $("fileInput").onchange = async e=>{
     for (const f of e.target.files){
       const bytes = await f.arrayBuffer();
@@ -1407,8 +1611,32 @@ function wire(){
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
       b.classList.add("active"); S.mode = b.dataset.mode;
       updateSelRectColor();
+      $("templateOptions").style.display = S.mode === "template" ? "flex" : "none";
     };
   });
+  
+  $("btnSaveTemplate").onclick = () => {
+    if (!S.currentTemplate.length) {
+      status("No fields defined for template.", "err");
+      return;
+    }
+    const name = prompt("Enter a name for this template:");
+    if (!name || !name.trim()) return;
+    
+    S.templates.set(name.trim(), [...S.currentTemplate]);
+    S.currentTemplate = [];
+    $("lblTemplateFields").textContent = `0 fields`;
+    status(`Template "${name}" saved!`, "ok");
+    
+    // Clear visual overlays
+    renderPage();
+  };
+  
+  $("btnClearTemplate").onclick = () => {
+    S.currentTemplate = [];
+    $("lblTemplateFields").textContent = `0 fields`;
+    renderPage(); // Redraws and clears overlays
+  };
   
   $("btnSearch").onclick = doSearch;
   $("inpSearch").onkeyup = e => { if (e.key === "Enter") doSearch(); };
