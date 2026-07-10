@@ -111,8 +111,6 @@
     <button class="mode" data-mode="tickmark" title="Drag a box: insert a custom tickmark">TM</button>
   </div>
   <div class="row" style="gap:4px; align-items:center;">
-    <label style="font-size:11px; color:#b9c6d2;">Materiality $</label>
-    <input type="number" id="inpMateriality" value="0" min="0" step="1" style="width:60px" title="Differences within this threshold are treated as tie-outs">
     <span style="flex:1"></span>
     <button id="btnSnipDashboard" class="small" title="Show snip coverage dashboard">📊 Dashboard</button>
   </div>
@@ -242,8 +240,7 @@ const S = {
   ocrWorker: null,
   searchResults: [],
   templates: new Map(),   // templateName -> [{fieldName, rect}]
-  currentTemplate: [],    // fields being actively drawn
-  materiality: 0          // materiality threshold for tieout/variance
+  currentTemplate: []     // fields being actively drawn
 };
 
 const BUILT_IN_TEMPLATES = {
@@ -1044,7 +1041,7 @@ async function handleSnip(rect, shiftKey=false){
     // Compare PDF-extracted numeric value to current Excel cell value
     const pdfNums = raw ? parseNumbers(raw) : [];
     const pdfNum = pdfNums.length === 1 ? pdfNums[0] : null;
-    let resolvedMode = mode; // may flip tieout<->variance based on materiality
+    let resolvedMode = mode;
     let comparisonNote = "";
     try {
       const cellVal = await Excel.run(async ctx => {
@@ -1055,16 +1052,12 @@ async function handleSnip(rect, shiftKey=false){
       const cellNum = (typeof cellVal === "number") ? cellVal : parseFloat(String(cellVal).replace(/[$,()\s]/g, ""));
       if (pdfNum !== null && !isNaN(cellNum)) {
         const diff = Math.abs(pdfNum - cellNum);
-        const mat = S.materiality || 0;
         if (diff === 0) {
           resolvedMode = "tieout";
           comparisonNote = `Exact match: PDF=${pdfNum}, Cell=${cellNum}`;
-        } else if (mat > 0 && diff <= mat) {
-          resolvedMode = "tieout";
-          comparisonNote = `Within materiality ($${mat} threshold): PDF=${pdfNum}, Cell=${cellNum}, Diff=$${diff.toFixed(2)}`;
-        } else if (diff > 0) {
+        } else {
           resolvedMode = "variance";
-          comparisonNote = `Variance: PDF=${pdfNum}, Cell=${cellNum}, Diff=$${diff.toFixed(2)}`;
+          comparisonNote = `Difference: PDF=${pdfNum}, Cell=${cellNum}, Diff=$${diff.toFixed(2)}`;
         }
       }
     } catch(_) {}
@@ -1076,7 +1069,6 @@ async function handleSnip(rect, shiftKey=false){
       const userNote = prompt("Variance explanation:", comparisonNote) || "";
       note = userNote;
     }
-    // Use the resolvedMode so writeSnip applies the correct fill/formatting
     await writeSnip(resolvedMode, value, raw, pdfRect, note, shiftKey);
     drawHighlight(pdfRect, resolvedMode, "");
     return;
@@ -2014,7 +2006,6 @@ function wire(){
   $("btnOverview").onclick = exportOverview;
   $("btnSnipDashboard").onclick = buildDashboard;
   $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
-  $("inpMateriality").onchange = e => { S.materiality = parseFloat(e.target.value) || 0; };
 }
 
 async function buildDashboard() {
