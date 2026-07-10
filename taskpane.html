@@ -235,139 +235,207 @@ const S = {
 };
 
 const BUILT_IN_TEMPLATES = {
-  "Standard AWS Invoice": [
-    { fieldName: "Invoice Number", rect: [415, 690, 150, 15], page: 1 },
-    { fieldName: "Invoice Date", rect: [415, 675, 150, 15], page: 1 },
-    { fieldName: "Total Amount", rect: [415, 660, 150, 15], page: 1 }
-  ],
-  "IRS W-2": [
-    { fieldName: "Box 1 Wages", rect: [350, 680, 100, 20], page: 1 },
-    { fieldName: "Box 2 Fed Tax", rect: [450, 680, 100, 20], page: 1 },
-    { fieldName: "Box 3 SS Wages", rect: [350, 640, 100, 20], page: 1 }
-  ],
-  "Generic Bank Statement": [
-    { fieldName: "Account Number", rect: [400, 720, 150, 20], page: 1 },
-    { fieldName: "Statement Date", rect: [400, 700, 150, 20], page: 1 },
-    { fieldName: "Beginning Balance", rect: [400, 650, 100, 20], page: 1 },
-    { fieldName: "Ending Balance", rect: [400, 630, 100, 20], page: 1 }
-  ],
-  "Yardi Rent Roll": [
-    { fieldName: "Property Name", rect: [50, 750, 200, 20], page: 1 },
-    { fieldName: "Report Date", rect: [450, 750, 100, 20], page: 1 },
-    { fieldName: "Total Units", rect: [50, 700, 80, 15], page: 1 },
-    { fieldName: "Occupancy %", rect: [150, 700, 80, 15], page: 1 },
-    { fieldName: "Total Potential Rent", rect: [400, 680, 120, 15], page: 1 }
-  ],
-  "Yardi Income Statement": [
-    { fieldName: "Entity Name", rect: [50, 760, 250, 20], page: 1 },
-    { fieldName: "Period End Date", rect: [50, 740, 150, 15], page: 1 },
-    { fieldName: "Total Rental Income", rect: [350, 600, 150, 15], page: 1 },
-    { fieldName: "Total Operating Expenses", rect: [350, 450, 150, 15], page: 1 },
-    { fieldName: "Net Operating Income (NOI)", rect: [350, 400, 150, 15], page: 1 }
-  ],
-  "Yardi Tenant Ledger": [
-    { fieldName: "Tenant Name", rect: [50, 730, 200, 15], page: 1 },
-    { fieldName: "Unit Number", rect: [260, 730, 100, 15], page: 1 },
-    { fieldName: "Lease Start Date", rect: [50, 710, 100, 15], page: 1 },
-    { fieldName: "Lease End Date", rect: [160, 710, 100, 15], page: 1 },
-    { fieldName: "Current Balance", rect: [450, 680, 100, 15], page: 1 }
-  ],
-  "Yardi AP Detail": [
-    { fieldName: "Vendor Name", rect: [50, 740, 200, 15], page: 1 },
-    { fieldName: "Invoice Number", rect: [260, 740, 100, 15], page: 1 },
-    { fieldName: "Invoice Date", rect: [370, 740, 80, 15], page: 1 },
-    { fieldName: "GL Account", rect: [50, 710, 100, 15], page: 1 },
-    { fieldName: "Invoice Total", rect: [450, 690, 100, 15], page: 1 }
-  ],
-  "Yardi Job Cost Detail": [
-    { fieldName: "Job Name", rect: [50, 750, 250, 20], page: 1 },
-    { fieldName: "Cost Code", rect: [50, 720, 100, 15], page: 1 },
-    { fieldName: "Description", rect: [160, 720, 200, 15], page: 1 },
-    { fieldName: "Commitment Amount", rect: [370, 720, 100, 15], page: 1 },
-    { fieldName: "Amount Billed", rect: [480, 720, 100, 15], page: 1 }
-  ],
-  "Closing Statement (ALTA/HUD-1)": [
-    { fieldName: "Property Address", rect: [100, 750, 300, 20], page: 1 },
-    { fieldName: "Closing Date", rect: [450, 750, 100, 20], page: 1 },
-    { fieldName: "Sales Price", rect: [350, 600, 100, 15], page: 1 },
-    { fieldName: "Broker Commission", rect: [350, 500, 100, 15], page: 1 },
-    { fieldName: "Cash to Seller", rect: [450, 200, 100, 20], page: 1 }
-  ],
-  "Property Tax Bill": [
-    { fieldName: "Parcel ID", rect: [50, 720, 150, 20], page: 1 },
-    { fieldName: "Assessed Value", rect: [300, 650, 100, 20], page: 1 },
-    { fieldName: "Total Tax Due", rect: [450, 600, 100, 20], page: 1 },
-    { fieldName: "Due Date", rect: [450, 580, 100, 20], page: 1 }
-  ],
-  "Mortgage Payoff Statement": [
-    { fieldName: "Loan Number", rect: [50, 700, 150, 20], page: 1 },
-    { fieldName: "Payoff Date", rect: [400, 700, 100, 20], page: 1 },
-    { fieldName: "Principal Balance", rect: [400, 600, 100, 20], page: 1 },
-    { fieldName: "Interest Due", rect: [400, 580, 100, 20], page: 1 },
-    { fieldName: "Total Payoff Amount", rect: [400, 500, 120, 20], page: 1 }
-  ],
-  "AP Aging Report": [
-    { fieldName: "Vendor Name", rect: [50, 750, 200, 15], page: 1 },
-    { fieldName: "Current", rect: [260, 750, 80, 15], page: 1 },
-    { fieldName: "31-60 Days", rect: [350, 750, 80, 15], page: 1 },
-    { fieldName: "61-90 Days", rect: [440, 750, 80, 15], page: 1 },
-    { fieldName: "Over 90 Days", rect: [530, 750, 80, 15], page: 1 },
-    { fieldName: "Total Balance", rect: [620, 750, 80, 15], page: 1 }
-  ],
-  "Bank Interest Statement": [
-    { fieldName: "Account Number", rect: [50, 720, 150, 20], page: 1 },
-    { fieldName: "Statement Date", rect: [450, 720, 100, 20], page: 1 },
-    { fieldName: "Interest Earned", rect: [450, 650, 100, 20], page: 1 },
-    { fieldName: "APY", rect: [450, 630, 100, 20], page: 1 }
-  ],
-  "Adjusting Journal Entry (AJE)": [
-    { fieldName: "Entity / Property", rect: [50, 760, 200, 20], page: 1 },
-    { fieldName: "JE Number", rect: [450, 760, 100, 20], page: 1 },
-    { fieldName: "Effective Date", rect: [450, 740, 100, 20], page: 1 },
-    { fieldName: "Total Debit", rect: [350, 700, 100, 15], page: 1 },
-    { fieldName: "Total Credit", rect: [450, 700, 100, 15], page: 1 }
-  ],
-  "Yardi Bank Reconciliation": [
-    { fieldName: "Bank Account", rect: [50, 750, 200, 20], page: 1 },
-    { fieldName: "Statement Date", rect: [450, 750, 100, 20], page: 1 },
-    { fieldName: "Adjusted Bank Balance", rect: [450, 600, 100, 15], page: 1 },
-    { fieldName: "Book Balance", rect: [450, 580, 100, 15], page: 1 },
-    { fieldName: "Unreconciled Difference", rect: [450, 550, 100, 15], page: 1 }
-  ],
-  "Yardi Check (yCheck)": [
-    { fieldName: "Payee Name", rect: [150, 680, 250, 20], page: 1 },
-    { fieldName: "Check Date", rect: [450, 720, 100, 15], page: 1 },
-    { fieldName: "Check Number", rect: [450, 740, 100, 15], page: 1 },
-    { fieldName: "Amount", rect: [450, 680, 100, 20], page: 1 },
-    { fieldName: "Memo", rect: [150, 650, 250, 15], page: 1 }
-  ],
-  "Yardi Trial Balance": [
-    { fieldName: "Entity Name", rect: [50, 760, 250, 20], page: 1 },
-    { fieldName: "Period", rect: [50, 740, 150, 15], page: 1 },
-    { fieldName: "Account Number", rect: [50, 600, 100, 15], page: 1 },
-    { fieldName: "Account Name", rect: [160, 600, 200, 15], page: 1 },
-    { fieldName: "Ending Balance", rect: [450, 600, 100, 15], page: 1 }
-  ],
-  "Yardi Security Deposit Activity": [
-    { fieldName: "Tenant Name", rect: [50, 650, 200, 15], page: 1 },
-    { fieldName: "Unit Number", rect: [260, 650, 80, 15], page: 1 },
-    { fieldName: "Move-In Date", rect: [350, 650, 80, 15], page: 1 },
-    { fieldName: "Deposit Required", rect: [440, 650, 80, 15], page: 1 },
-    { fieldName: "Deposit On Hand", rect: [530, 650, 80, 15], page: 1 }
-  ],
-  "Yardi Receipts by Tenant": [
-    { fieldName: "Tenant Name", rect: [50, 700, 200, 15], page: 1 },
-    { fieldName: "Receipt Date", rect: [260, 700, 100, 15], page: 1 },
-    { fieldName: "Receipt Number", rect: [370, 700, 100, 15], page: 1 },
-    { fieldName: "Amount", rect: [480, 700, 100, 15], page: 1 },
-    { fieldName: "Payment Type", rect: [590, 700, 100, 15], page: 1 }
-  ],
-  "Construction Loan Draw": [
-    { fieldName: "Draw Number", rect: [50, 750, 100, 20], page: 1 },
-    { fieldName: "Project Name", rect: [160, 750, 250, 20], page: 1 },
-    { fieldName: "Draw Amount", rect: [450, 700, 100, 20], page: 1 },
-    { fieldName: "Funded Date", rect: [450, 680, 100, 15], page: 1 }
-  ]
+  "General": {
+    "Standard AWS Invoice": {
+      keywords: ["Amazon Web Services", "AWS", "Inc.", "P.O. Box", "Total Amount"],
+      fields: [
+        { fieldName: "Invoice Number", rect: [415, 690, 150, 15], page: 1 },
+        { fieldName: "Invoice Date", rect: [415, 675, 150, 15], page: 1 },
+        { fieldName: "Total Amount", rect: [415, 660, 150, 15], page: 1 }
+      ]
+    },
+    "IRS W-2": {
+      keywords: ["W-2", "Wage and Tax Statement", "Department of the Treasury", "Internal Revenue Service"],
+      fields: [
+        { fieldName: "Box 1 Wages", rect: [350, 680, 100, 20], page: 1 },
+        { fieldName: "Box 2 Fed Tax", rect: [450, 680, 100, 20], page: 1 },
+        { fieldName: "Box 3 SS Wages", rect: [350, 640, 100, 20], page: 1 }
+      ]
+    },
+    "Generic Bank Statement": {
+      keywords: ["Statement of Account", "Beginning Balance", "Ending Balance", "Deposits and Additions"],
+      fields: [
+        { fieldName: "Account Number", rect: [400, 720, 150, 20], page: 1 },
+        { fieldName: "Statement Date", rect: [400, 700, 150, 20], page: 1 },
+        { fieldName: "Beginning Balance", rect: [400, 650, 100, 20], page: 1 },
+        { fieldName: "Ending Balance", rect: [400, 630, 100, 20], page: 1 }
+      ]
+    },
+    "Bank Interest Statement": {
+      keywords: ["Interest Earned", "Annual Percentage Yield", "APY", "Interest Paid"],
+      fields: [
+        { fieldName: "Account Number", rect: [50, 720, 150, 20], page: 1 },
+        { fieldName: "Statement Date", rect: [450, 720, 100, 20], page: 1 },
+        { fieldName: "Interest Earned", rect: [450, 650, 100, 20], page: 1 },
+        { fieldName: "APY", rect: [450, 630, 100, 20], page: 1 }
+      ]
+    }
+  },
+  "Yardi Reports": {
+    "Yardi Rent Roll": {
+      keywords: ["Yardi Systems", "Rent Roll", "Occupancy", "Potential Rent"],
+      fields: [
+        { fieldName: "Property Name", rect: [50, 750, 200, 20], page: 1 },
+        { fieldName: "Report Date", rect: [450, 750, 100, 20], page: 1 },
+        { fieldName: "Total Units", rect: [50, 700, 80, 15], page: 1 },
+        { fieldName: "Occupancy %", rect: [150, 700, 80, 15], page: 1 },
+        { fieldName: "Total Potential Rent", rect: [400, 680, 120, 15], page: 1 }
+      ]
+    },
+    "Yardi Income Statement": {
+      keywords: ["Yardi Systems", "Income Statement", "Net Operating Income", "Operating Expenses"],
+      fields: [
+        { fieldName: "Entity Name", rect: [50, 760, 250, 20], page: 1 },
+        { fieldName: "Period End Date", rect: [50, 740, 150, 15], page: 1 },
+        { fieldName: "Total Rental Income", rect: [350, 600, 150, 15], page: 1 },
+        { fieldName: "Total Operating Expenses", rect: [350, 450, 150, 15], page: 1 },
+        { fieldName: "Net Operating Income (NOI)", rect: [350, 400, 150, 15], page: 1 }
+      ]
+    },
+    "Yardi Tenant Ledger": {
+      keywords: ["Yardi Systems", "Tenant Ledger", "Lease Start", "Current Balance"],
+      fields: [
+        { fieldName: "Tenant Name", rect: [50, 730, 200, 15], page: 1 },
+        { fieldName: "Unit Number", rect: [260, 730, 100, 15], page: 1 },
+        { fieldName: "Lease Start Date", rect: [50, 710, 100, 15], page: 1 },
+        { fieldName: "Lease End Date", rect: [160, 710, 100, 15], page: 1 },
+        { fieldName: "Current Balance", rect: [450, 680, 100, 15], page: 1 }
+      ]
+    },
+    "Yardi AP Detail": {
+      keywords: ["Yardi Systems", "Payables", "AP Aging", "Vendor Ledger"],
+      fields: [
+        { fieldName: "Vendor Name", rect: [50, 740, 200, 15], page: 1 },
+        { fieldName: "Invoice Number", rect: [260, 740, 100, 15], page: 1 },
+        { fieldName: "Invoice Date", rect: [370, 740, 80, 15], page: 1 },
+        { fieldName: "GL Account", rect: [50, 710, 100, 15], page: 1 },
+        { fieldName: "Invoice Total", rect: [450, 690, 100, 15], page: 1 }
+      ]
+    },
+    "Yardi Job Cost Detail": {
+      keywords: ["Yardi Systems", "Job Cost", "Commitment", "Amount Billed"],
+      fields: [
+        { fieldName: "Job Name", rect: [50, 750, 250, 20], page: 1 },
+        { fieldName: "Cost Code", rect: [50, 720, 100, 15], page: 1 },
+        { fieldName: "Description", rect: [160, 720, 200, 15], page: 1 },
+        { fieldName: "Commitment Amount", rect: [370, 720, 100, 15], page: 1 },
+        { fieldName: "Amount Billed", rect: [480, 720, 100, 15], page: 1 }
+      ]
+    },
+    "Yardi Bank Reconciliation": {
+      keywords: ["Yardi Systems", "Bank Reconciliation", "Adjusted Bank Balance", "Unreconciled Difference"],
+      fields: [
+        { fieldName: "Bank Account", rect: [50, 750, 200, 20], page: 1 },
+        { fieldName: "Statement Date", rect: [450, 750, 100, 20], page: 1 },
+        { fieldName: "Adjusted Bank Balance", rect: [450, 600, 100, 15], page: 1 },
+        { fieldName: "Book Balance", rect: [450, 580, 100, 15], page: 1 },
+        { fieldName: "Unreconciled Difference", rect: [450, 550, 100, 15], page: 1 }
+      ]
+    },
+    "Yardi Check (yCheck)": {
+      keywords: ["Yardi Systems", "Check Number", "Pay to the order of", "Memo:"],
+      fields: [
+        { fieldName: "Payee Name", rect: [150, 680, 250, 20], page: 1 },
+        { fieldName: "Check Date", rect: [450, 720, 100, 15], page: 1 },
+        { fieldName: "Check Number", rect: [450, 740, 100, 15], page: 1 },
+        { fieldName: "Amount", rect: [450, 680, 100, 20], page: 1 },
+        { fieldName: "Memo", rect: [150, 650, 250, 15], page: 1 }
+      ]
+    },
+    "Yardi Trial Balance": {
+      keywords: ["Yardi Systems", "Trial Balance", "Account Name", "Ending Balance"],
+      fields: [
+        { fieldName: "Entity Name", rect: [50, 760, 250, 20], page: 1 },
+        { fieldName: "Period", rect: [50, 740, 150, 15], page: 1 },
+        { fieldName: "Account Number", rect: [50, 600, 100, 15], page: 1 },
+        { fieldName: "Account Name", rect: [160, 600, 200, 15], page: 1 },
+        { fieldName: "Ending Balance", rect: [450, 600, 100, 15], page: 1 }
+      ]
+    },
+    "Yardi Security Deposit Activity": {
+      keywords: ["Yardi Systems", "Security Deposit", "Deposit Required", "Deposit On Hand"],
+      fields: [
+        { fieldName: "Tenant Name", rect: [50, 650, 200, 15], page: 1 },
+        { fieldName: "Unit Number", rect: [260, 650, 80, 15], page: 1 },
+        { fieldName: "Move-In Date", rect: [350, 650, 80, 15], page: 1 },
+        { fieldName: "Deposit Required", rect: [440, 650, 80, 15], page: 1 },
+        { fieldName: "Deposit On Hand", rect: [530, 650, 80, 15], page: 1 }
+      ]
+    },
+    "Yardi Receipts by Tenant": {
+      keywords: ["Yardi Systems", "Receipts by Tenant", "Receipt Number", "Payment Type"],
+      fields: [
+        { fieldName: "Tenant Name", rect: [50, 700, 200, 15], page: 1 },
+        { fieldName: "Receipt Date", rect: [260, 700, 100, 15], page: 1 },
+        { fieldName: "Receipt Number", rect: [370, 700, 100, 15], page: 1 },
+        { fieldName: "Amount", rect: [480, 700, 100, 15], page: 1 },
+        { fieldName: "Payment Type", rect: [590, 700, 100, 15], page: 1 }
+      ]
+    }
+  },
+  "Real Estate Closing": {
+    "Closing Statement (ALTA/HUD-1)": {
+      keywords: ["ALTA Settlement Statement", "HUD-1", "Cash to Seller", "Broker Commission"],
+      fields: [
+        { fieldName: "Property Address", rect: [100, 750, 300, 20], page: 1 },
+        { fieldName: "Closing Date", rect: [450, 750, 100, 20], page: 1 },
+        { fieldName: "Sales Price", rect: [350, 600, 100, 15], page: 1 },
+        { fieldName: "Broker Commission", rect: [350, 500, 100, 15], page: 1 },
+        { fieldName: "Cash to Seller", rect: [450, 200, 100, 20], page: 1 }
+      ]
+    },
+    "Property Tax Bill": {
+      keywords: ["Property Tax", "Assessed Value", "Parcel ID", "Tax Due", "Tax Assessor"],
+      fields: [
+        { fieldName: "Parcel ID", rect: [50, 720, 150, 20], page: 1 },
+        { fieldName: "Assessed Value", rect: [300, 650, 100, 20], page: 1 },
+        { fieldName: "Total Tax Due", rect: [450, 600, 100, 20], page: 1 },
+        { fieldName: "Due Date", rect: [450, 580, 100, 20], page: 1 }
+      ]
+    },
+    "Mortgage Payoff Statement": {
+      keywords: ["Payoff Statement", "Principal Balance", "Interest Due", "Total Payoff Amount", "Per Diem"],
+      fields: [
+        { fieldName: "Loan Number", rect: [50, 700, 150, 20], page: 1 },
+        { fieldName: "Payoff Date", rect: [400, 700, 100, 20], page: 1 },
+        { fieldName: "Principal Balance", rect: [400, 600, 100, 20], page: 1 },
+        { fieldName: "Interest Due", rect: [400, 580, 100, 20], page: 1 },
+        { fieldName: "Total Payoff Amount", rect: [400, 500, 120, 20], page: 1 }
+      ]
+    },
+    "Construction Loan Draw": {
+      keywords: ["Draw Request", "Construction Loan", "Funded Date", "Draw Amount"],
+      fields: [
+        { fieldName: "Draw Number", rect: [50, 750, 100, 20], page: 1 },
+        { fieldName: "Project Name", rect: [160, 750, 250, 20], page: 1 },
+        { fieldName: "Draw Amount", rect: [450, 700, 100, 20], page: 1 },
+        { fieldName: "Funded Date", rect: [450, 680, 100, 15], page: 1 }
+      ]
+    }
+  },
+  "Month End Close": {
+    "AP Aging Report": {
+      keywords: ["AP Aging", "Aged Payables", "Over 90 Days", "Vendor Balance"],
+      fields: [
+        { fieldName: "Vendor Name", rect: [50, 750, 200, 15], page: 1 },
+        { fieldName: "Current", rect: [260, 750, 80, 15], page: 1 },
+        { fieldName: "31-60 Days", rect: [350, 750, 80, 15], page: 1 },
+        { fieldName: "61-90 Days", rect: [440, 750, 80, 15], page: 1 },
+        { fieldName: "Over 90 Days", rect: [530, 750, 80, 15], page: 1 },
+        { fieldName: "Total Balance", rect: [620, 750, 80, 15], page: 1 }
+      ]
+    },
+    "Adjusting Journal Entry (AJE)": {
+      keywords: ["Adjusting Journal Entry", "AJE", "Total Debit", "Total Credit", "JE Number"],
+      fields: [
+        { fieldName: "Entity / Property", rect: [50, 760, 200, 20], page: 1 },
+        { fieldName: "JE Number", rect: [450, 760, 100, 20], page: 1 },
+        { fieldName: "Effective Date", rect: [450, 740, 100, 20], page: 1 },
+        { fieldName: "Total Debit", rect: [350, 700, 100, 15], page: 1 },
+        { fieldName: "Total Credit", rect: [450, 700, 100, 15], page: 1 }
+      ]
+    }
+  }
 };
 
 const $ = id => document.getElementById(id);
@@ -1328,7 +1396,12 @@ async function loadRegistry(){
            const tplRows = usedTpl.values.slice(1);
            for (const r of tplRows) {
              if (!r[0]) continue;
-             S.templates.set(r[0], safeJson(r[1]) || []);
+             const parsed = safeJson(r[1]);
+             if (Array.isArray(parsed)) {
+               S.templates.set(r[0], { category: "User Templates", keywords: [], fields: parsed });
+             } else if (parsed) {
+               S.templates.set(r[0], parsed);
+             }
            }
         }
       }
@@ -1336,9 +1409,17 @@ async function loadRegistry(){
     if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
   }catch(e){ /* first run */ }
   
-  // Inject built-in templates if not already present
-  Object.entries(BUILT_IN_TEMPLATES).forEach(([name, fields]) => {
-    if (!S.templates.has(name)) S.templates.set(name, fields);
+  // Inject built-in templates if not already present, flattening category structure
+  Object.entries(BUILT_IN_TEMPLATES).forEach(([category, templates]) => {
+    Object.entries(templates).forEach(([name, templateData]) => {
+      if (!S.templates.has(name)) {
+        S.templates.set(name, {
+          category,
+          keywords: templateData.keywords,
+          fields: templateData.fields
+        });
+      }
+    });
   });
 }
 const safeJson = s => { try{ return JSON.parse(s); }catch(_){ return null; } };
@@ -1619,7 +1700,38 @@ function wire(){
     status("Bulk Rollforward complete.", "ok");
   };
   
-  $("btnExtractForms").onclick = () => {
+  async function autoDetectTemplate(docName) {
+    if (!docName || !S.docs.has(docName)) return null;
+    const b64 = S.docs.get(docName);
+    try {
+      const arr = await base64ToArrayBufferAsync(b64);
+      const pdf = await pdfjsLib.getDocument({data: arr}).promise;
+      const page = await pdf.getPage(1);
+      const textContent = await page.getTextContent();
+      const text = textContent.items.map(i => i.str).join(" ").toLowerCase();
+      
+      let bestMatch = null;
+      let maxScore = 0;
+      
+      for (const [name, data] of S.templates.entries()) {
+        if (!data.keywords || !data.keywords.length) continue;
+        let score = 0;
+        for (const kw of data.keywords) {
+          if (text.includes(kw.toLowerCase())) score++;
+        }
+        if (score > maxScore && score > 0) {
+          maxScore = score;
+          bestMatch = name;
+        }
+      }
+      return bestMatch;
+    } catch(e) {
+      console.error("Auto-detect failed", e);
+      return null;
+    }
+  }
+
+  $("btnExtractForms").onclick = async () => {
     if (S.templates.size === 0) {
       status("No templates available. Use 'Form Template' mode to create one.", "err");
       return;
@@ -1630,8 +1742,50 @@ function wire(){
     }
     const sel = $("selFormTemplate");
     sel.innerHTML = "";
-    for (const name of S.templates.keys()) sel.innerHTML += `<option value="${name}">${name}</option>`;
     
+    // Group templates by category
+    const categories = {};
+    for (const [name, data] of S.templates.entries()) {
+      const isArr = Array.isArray(data);
+      const cat = isArr ? "User Templates" : (data.category || "User Templates");
+      if (!categories[cat]) categories[cat] = [];
+      categories[cat].push(name);
+    }
+    
+    for (const [cat, names] of Object.entries(categories)) {
+      const og = document.createElement("optgroup");
+      og.label = cat;
+      for (const name of names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        og.appendChild(opt);
+      }
+      sel.appendChild(og);
+    }
+    
+
+    // Auto-detect template based on currently open document (if any) or first document
+    const docToAnalyze = S.cur || S.docs.keys().next().value;
+    if (docToAnalyze) {
+      status("Analyzing document for template...", "");
+      const bestTemplate = await autoDetectTemplate(docToAnalyze);
+      status("", ""); // clear
+      if (bestTemplate) {
+        sel.value = bestTemplate;
+        const autoLabel = document.createElement("div");
+        autoLabel.id = "autoDetectLabel";
+        autoLabel.style = "font-size:10px; color:var(--ok); margin-top:2px;";
+        autoLabel.textContent = `✨ Auto-detected based on ${docToAnalyze}`;
+        
+        // Remove old label if exists
+        const oldLabel = $("autoDetectLabel");
+        if (oldLabel) oldLabel.remove();
+        
+        sel.parentNode.insertBefore(autoLabel, sel.nextSibling);
+      }
+    }
+
     const list = $("formDocList");
     list.innerHTML = "";
     for (const docName of S.docs.keys()) {
@@ -1763,8 +1917,12 @@ function wire(){
     }
     const name = prompt("Enter a name for this template:");
     if (!name || !name.trim()) return;
-    
-    S.templates.set(name.trim(), [...S.currentTemplate]);
+    // Ensure saved user templates use the object format so they group correctly
+    S.templates.set(name.trim(), {
+      category: "User Templates",
+      keywords: [],
+      fields: [...S.currentTemplate]
+    });
     S.currentTemplate = [];
     $("lblTemplateFields").textContent = `0 fields`;
     status(`Template "${name}" saved!`, "ok");
