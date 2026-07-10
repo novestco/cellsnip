@@ -190,16 +190,10 @@
 
 <div id="formExtractModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
   <div style="font-weight:bold; margin-bottom:8px;">Extract Forms</div>
-  <p style="font-size:11px; color:#555; margin-bottom: 8px;">Select a template and the documents to extract data from.</p>
+  <p style="font-size:11px; color:#555; margin-bottom: 8px;">Assign a template for each document.</p>
   
   <div style="margin-bottom: 8px;">
-    <label style="font-size:11px; font-weight:bold;">Template:</label>
-    <select id="selFormTemplate" style="width:100%; font-size:11px; padding:2px;"></select>
-  </div>
-  
-  <div style="margin-bottom: 8px;">
-    <label style="font-size:11px; font-weight:bold;">Documents to process:</label>
-    <div id="formDocList" style="max-height: 120px; overflow-y:auto; border:1px solid #ccc; padding:4px; font-size:11px; display:flex; flex-direction:column; gap:2px;"></div>
+    <div id="formDocList" style="max-height: 250px; overflow-y:auto; border:1px solid #ccc; padding:4px; font-size:11px; display:flex; flex-direction:column; gap:4px;"></div>
   </div>
   
   <div style="display:flex; justify-content:flex-end; gap:4px;">
@@ -1731,19 +1725,10 @@ function wire(){
     }
   }
 
-  $("btnExtractForms").onclick = async () => {
-    if (S.templates.size === 0) {
-      status("No templates available. Use 'Form Template' mode to create one.", "err");
-      return;
-    }
-    if (S.docs.size === 0) {
-      status("No documents available.", "err");
-      return;
-    }
-    const sel = $("selFormTemplate");
-    sel.innerHTML = "";
+  function buildTemplateSelectHTML(selectedVal) {
+    let html = `<select class="docTplSel" style="font-size:10px; padding:2px; max-width:140px;">`;
+    html += `<option value="">-- Skip --</option>`;
     
-    // Group templates by category
     const categories = {};
     for (const [name, data] of S.templates.entries()) {
       const isArr = Array.isArray(data);
@@ -1753,134 +1738,157 @@ function wire(){
     }
     
     for (const [cat, names] of Object.entries(categories)) {
-      const og = document.createElement("optgroup");
-      og.label = cat;
+      html += `<optgroup label="${cat}">`;
       for (const name of names) {
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        og.appendChild(opt);
+        const sel = (name === selectedVal) ? "selected" : "";
+        html += `<option value="${name}" ${sel}>${name}</option>`;
       }
-      sel.appendChild(og);
+      html += `</optgroup>`;
+    }
+    html += `</select>`;
+    return html;
+  }
+
+  $("btnExtractForms").onclick = async () => {
+    if (S.templates.size === 0) {
+      status("No templates available. Use 'Form Template' mode to create one.", "err");
+      return;
+    }
+    if (S.docs.size === 0) {
+      status("No documents available.", "err");
+      return;
     }
     
-
-    // Auto-detect template based on currently open document (if any) or first document
-    const docToAnalyze = S.cur || S.docs.keys().next().value;
-    if (docToAnalyze) {
-      status("Analyzing document for template...", "");
-      const bestTemplate = await autoDetectTemplate(docToAnalyze);
-      status("", ""); // clear
-      if (bestTemplate) {
-        sel.value = bestTemplate;
-        const autoLabel = document.createElement("div");
-        autoLabel.id = "autoDetectLabel";
-        autoLabel.style = "font-size:10px; color:var(--ok); margin-top:2px;";
-        autoLabel.textContent = `✨ Auto-detected based on ${docToAnalyze}`;
-        
-        // Remove old label if exists
-        const oldLabel = $("autoDetectLabel");
-        if (oldLabel) oldLabel.remove();
-        
-        sel.parentNode.insertBefore(autoLabel, sel.nextSibling);
-      }
-    }
-
-    const list = $("formDocList");
-    list.innerHTML = "";
-    for (const docName of S.docs.keys()) {
-      list.innerHTML += `<label><input type="checkbox" class="chkFormDoc" value="${docName}" checked> ${docName}</label>`;
-    }
     $("formExtractModal").style.display = "block";
+    const list = $("formDocList");
+    list.innerHTML = `<div style="text-align:center; font-style:italic;">Detecting templates...</div>`;
+    
+    const results = [];
+    for (const docName of S.docs.keys()) {
+       const best = await autoDetectTemplate(docName);
+       results.push({ docName, best });
+    }
+    
+    let html = "";
+    for (const res of results) {
+       const selHtml = buildTemplateSelectHTML(res.best);
+       const badge = res.best ? `<span style="color:var(--ok); font-size:10px; margin-left:4px;" title="Auto-detected">✨</span>` : "";
+       html += `
+         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #eee; padding-bottom:4px;" class="formDocRow" data-doc="${res.docName}">
+           <div style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap; max-width:140px;" title="${res.docName}">${res.docName}${badge}</div>
+           ${selHtml}
+         </div>
+       `;
+    }
+    list.innerHTML = html;
   };
   
   $("btnCancelExtractForms").onclick = () => $("formExtractModal").style.display = "none";
   $("btnRunExtractForms").onclick = async () => {
     $("formExtractModal").style.display = "none";
-    const tplName = $("selFormTemplate").value;
-    const template = S.templates.get(tplName);
-    if (!template) return;
     
-    const selectedDocs = Array.from(document.querySelectorAll(".chkFormDoc"))
-      .filter(cb => cb.checked)
-      .map(cb => cb.value);
-      
-    if (!selectedDocs.length) return;
+    // Gather selections
+    const selections = [];
+    document.querySelectorAll(".formDocRow").forEach(row => {
+      const docName = row.getAttribute("data-doc");
+      const tplSel = row.querySelector(".docTplSel");
+      if (tplSel && tplSel.value) {
+        selections.push({ docName, tplName: tplSel.value });
+      }
+    });
     
-    status("Extracting form data...", "ok");
+    if (selections.length === 0) {
+      status("No documents selected for extraction.", "err");
+      return;
+    }
+    
+    // Group by template
+    const byTemplate = {};
+    for (const { docName, tplName } of selections) {
+      if (!byTemplate[tplName]) byTemplate[tplName] = [];
+      byTemplate[tplName].push(docName);
+    }
+    
+    status(`Extracting form data for ${selections.length} document(s)...`, "ok");
     try {
       await Excel.run(async ctx => {
-        let ws = ctx.workbook.worksheets.getItemOrNullObject("Form Extraction");
-        await ctx.sync();
-        if (!ws.isNullObject) ws.delete();
-        ws = ctx.workbook.worksheets.add("Form Extraction");
-        
-        // Write headers
-        const headers = ["Document", ...template.map(t => t.fieldName)];
-        ws.getRangeByIndexes(0, 0, 1, headers.length).values = [headers];
-        ws.getRangeByIndexes(0, 0, 1, headers.length).format.font.bold = true;
-        
-        // Extract data
-        const rows = [];
-        for (const docName of selectedDocs) {
-          const doc = S.docs.get(docName);
-          const rowVals = [docName];
-          for (const field of template) {
-            let extracted = "";
-            try {
-              // we only support single page template extraction right now (page 1 usually)
-              const pageObj = await doc.pdf.getPage(field.page || 1);
-              const vp = pageObj.getViewport({ scale: 1.0 }); // Use scale 1.0 for normalized rects?
-              // Wait, extractItems uses our pdfRect format [x,y,w,h] which is in pt.
-              const tc = await pageObj.getTextContent();
-              // Calculate rect intersections
-              let pageItems = tc.items.map(it => {
-                if (!it.transform || it.transform.length < 6) return null;
-                return { str: it.str, x: it.transform[4], y: vp.viewBox[3] - it.transform[5], w: it.width, h: it.height };
-              }).filter(Boolean);
-              
-              const [rx, ry, rw, rh] = field.rect;
-              const inside = pageItems.filter(i => {
-                const cx = i.x + i.w/2, cy = i.y - i.h/2;
-                return cx >= rx && cx <= rx+rw && cy >= ry && cy <= ry+rh;
-              });
-              extracted = inside.map(i=>i.str).join(" ").trim();
-              
-              // Register snip for cross-referencing
-              const snipKey = `Form Extraction!${getColLetter(rowVals.length)}${rows.length + 2}`;
-              S.registry.set(snipKey, {
-                key: snipKey, sheet: "Form Extraction", addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
-                mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: field.rect, raw: extracted, ts: new Date().toISOString()
-              });
-              
-            } catch(e) { console.error("Extraction error", e); }
-            rowVals.push(extracted);
+        for (const [tplName, docNames] of Object.entries(byTemplate)) {
+          const tplData = S.templates.get(tplName);
+          if (!tplData) continue;
+          const template = Array.isArray(tplData) ? tplData : tplData.fields;
+          
+          let safeSheetName = `Extracted - ${tplName}`.substring(0, 31); // Excel max 31 chars
+          let ws = ctx.workbook.worksheets.getItemOrNullObject(safeSheetName);
+          await ctx.sync();
+          if (!ws.isNullObject) ws.delete();
+          ws = ctx.workbook.worksheets.add(safeSheetName);
+          
+          // Write headers
+          const headers = ["Document", ...template.map(t => t.fieldName)];
+          ws.getRangeByIndexes(0, 0, 1, headers.length).values = [headers];
+          ws.getRangeByIndexes(0, 0, 1, headers.length).format.font.bold = true;
+          
+          // Extract data
+          const rows = [];
+          for (const docName of docNames) {
+            const doc = S.docs.get(docName);
+            const rowVals = [docName];
+            for (const field of template) {
+              let extracted = "";
+              try {
+                // we only support single page template extraction right now (page 1 usually)
+                const pageObj = await doc.pdf.getPage(field.page || 1);
+                const vp = pageObj.getViewport({ scale: 1.0 }); // Use scale 1.0 for normalized rects?
+                const tc = await pageObj.getTextContent();
+                // Calculate rect intersections
+                let pageItems = tc.items.map(it => {
+                  if (!it.transform || it.transform.length < 6) return null;
+                  return { str: it.str, x: it.transform[4], y: vp.viewBox[3] - it.transform[5], w: it.width, h: it.height };
+                }).filter(Boolean);
+                
+                const [rx, ry, rw, rh] = field.rect;
+                const inside = pageItems.filter(i => {
+                  const cx = i.x + i.w/2, cy = i.y - i.h/2;
+                  return cx >= rx && cx <= rx+rw && cy >= ry && cy <= ry+rh;
+                });
+                extracted = inside.map(i=>i.str).join(" ").trim();
+                
+                // Register snip for cross-referencing
+                const snipKey = `${safeSheetName}!${getColLetter(rowVals.length)}${rows.length + 2}`;
+                S.registry.set(snipKey, {
+                  key: snipKey, sheet: safeSheetName, addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
+                  mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: field.rect, raw: extracted, ts: new Date().toISOString()
+                });
+                
+              } catch(e) { console.error("Extraction error", e); }
+              rowVals.push(extracted);
+            }
+            rows.push(rowVals);
           }
-          rows.push(rowVals);
-        }
-        
-        if (rows.length) {
-          ws.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
-          ws.getUsedRange().format.autofitColumns();
-        }
-        
-        // Add comments for cross-reference
-        if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
-          for (let r = 0; r < rows.length; r++) {
-            for (let c = 1; c < headers.length; c++) {
-              const cell = ws.getRangeByIndexes(r + 1, c, 1, 1);
-              const docName = rows[r][0];
-              const field = template[c - 1];
-              ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${field.page||1}`);
+          
+          if (rows.length) {
+            ws.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
+            ws.getUsedRange().format.autofitColumns();
+          }
+          
+          // Add comments for cross-reference
+          if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
+            for (let r = 0; r < rows.length; r++) {
+              for (let c = 1; c < headers.length; c++) {
+                const cell = ws.getRangeByIndexes(r + 1, c, 1, 1);
+                const docName = rows[r][0];
+                const field = template[c - 1];
+                ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${field.page||1}`);
+              }
             }
           }
+          
+          ws.activate();
         }
-        
-        ws.activate();
         await ctx.sync();
       });
       await saveRegistry();
-      status("Form extraction complete!", "ok");
+      status(`Successfully extracted ${selections.length} form(s)!`, "ok");
     } catch(e) {
       console.error(e);
       status("Extraction failed: " + e.message, "err");
