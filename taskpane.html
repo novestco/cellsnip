@@ -2119,20 +2119,9 @@ function wire(){
               try {
                 // we only support single page template extraction right now (page 1 usually)
                 const pageObj = await doc.pdf.getPage(field.page || 1);
-                const vp = pageObj.getViewport({ scale: 1.0 }); // Use scale 1.0 for normalized rects?
-                const tc = await pageObj.getTextContent();
-                // Calculate rect intersections
-                let pageItems = tc.items.map(it => {
-                  if (!it.transform || it.transform.length < 6) return null;
-                  return { str: it.str, x: it.transform[4], y: vp.viewBox[3] - it.transform[5], w: it.width, h: it.height };
-                }).filter(Boolean);
-                
-                const [rx, ry, rw, rh] = field.rect;
-                const inside = pageItems.filter(i => {
-                  const cx = i.x + i.w/2, cy = i.y - i.h/2;
-                  return cx >= rx && cx <= rx+rw && cy >= ry && cy <= ry+rh;
-                });
-                extracted = inside.map(i=>i.str).join(" ").trim();
+                const items = await extractItems(field.rect, pageObj);
+                const rowsGrouped = groupRows(items);
+                extracted = rowsGrouped.map(row => row.map(i => i.str).join(" ")).join("\n").trim();
                 
                 // Register snip for cross-referencing
                 const snipKey = `${safeSheetName}!${getColLetter(rowVals.length)}${rows.length + 2}`;
