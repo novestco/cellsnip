@@ -119,6 +119,10 @@
     <button class="mode" data-mode="tickmark" title="Drag a box: insert a custom tickmark">TM</button>
   </div>
   <div class="row" style="gap:4px; align-items:center;">
+    <label style="font-size:11px; color:#b9c6d2;">Period:</label>
+    <select id="selPeriod" style="font-size:11px; width:90px;">
+      <option value="">— none —</option>
+    </select>
     <span style="flex:1"></span>
     <button id="btnSnipDashboard" class="small" title="Show snip coverage dashboard">📊 Dashboard</button>
   </div>
@@ -136,6 +140,7 @@
     <button id="btnExtractForms" class="small" title="Apply a Form Template across multiple documents">Extract Forms</button>
     <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
     <button id="btnOverview" class="small" title="Create a 'Reconciliation Backup' worksheet documenting every snip">Export backup</button>
+    <button id="btnBatchTieout" class="small" title="Auto tie-out selected cells against all documents">Batch ✓</button>
   </div>
   <div class="row" style="background:#f4f4f4; padding: 4px; border-radius: 4px; margin-top: 4px; gap: 4px; align-items:center;">
     <input type="text" id="inpSearch" placeholder="Smart Search..." style="flex:1; border: 1px solid #ccc; padding: 2px 6px;">
@@ -153,6 +158,10 @@
        <span id="btnAddFolder" style="cursor:pointer; font-size:12px; color:#2e6da4;" title="Add new folder">➕</span>
      </div>
      <div id="docList" style="flex:1; overflow-y:auto; padding:4px; display:flex; flex-direction:column; gap:4px;"></div>
+     <div style="border-top:1px solid #ccc; padding:4px;">
+       <div style="font-size:10px; font-weight:600; color:#555; margin-bottom:4px;">PAGES</div>
+       <div id="pageThumbs" style="display:flex; flex-direction:column; gap:3px; overflow-y:auto; max-height:200px;"></div>
+     </div>
   </div>
   <div id="viewerWrap">
     <div id="emptyState">
@@ -248,7 +257,8 @@ const S = {
   ocrWorker: null,
   searchResults: [],
   templates: new Map(),   // templateName -> [{fieldName, rect}]
-  currentTemplate: []     // fields being actively drawn
+  currentTemplate: [],    // fields being actively drawn
+  period: ""
 };
 
 const BUILT_IN_TEMPLATES = {
@@ -856,6 +866,40 @@ async function renderPage(){
       $("overlay").appendChild(hl);
     }
   }
+  renderThumbnails();
+}
+
+async function renderThumbnails() {
+  const container = $("pageThumbs");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!S.cur || !S.docs.has(S.cur)) return;
+  const doc = S.docs.get(S.cur);
+  const numPages = Math.min(doc.pdf.numPages, 30);
+  
+  for (let p = 1; p <= numPages; p++) {
+    const pageObj = await doc.pdf.getPage(p);
+    const vp = pageObj.getViewport({ scale: 0.15 });
+    const canvas = document.createElement("canvas");
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    const ctx2d = canvas.getContext("2d");
+    await pageObj.render({ canvasContext: ctx2d, viewport: vp }).promise;
+    
+    const wrap = document.createElement("div");
+    wrap.style.cssText = `cursor:pointer; border:2px solid ${p === S.page ? '#2e6da4' : '#ddd'}; border-radius:3px; text-align:center; padding:1px; background:white;`;
+    wrap.title = `Page ${p}`;
+    canvas.style.cssText = "width:100%; display:block;";
+    wrap.appendChild(canvas);
+    
+    const lbl = document.createElement("div");
+    lbl.textContent = p;
+    lbl.style.cssText = "font-size:9px; color:#666; text-align:center;";
+    wrap.appendChild(lbl);
+    
+    wrap.onclick = () => { S.page = p; renderPage(); };
+    container.appendChild(wrap);
+  }
 }
 
 function clearHighlights(){
@@ -1180,6 +1224,89 @@ function getDateVariations(dateStr) {
     `${day}-${mName}-${y}`, `${day}-${mName}-${y.toString().slice(2)}`,
     `${mPad}${dPad}${y}`
   ];
+}
+
+async function batchTieout() {
+  if (!S.docs.size) { status("Load documents first.", "err"); return; }
+  
+  // Pre-scan all documents
+  const docPages = [];
+  for (const [docName, d] of S.docs.entries()) {
+    for (let p = 1; p <= d.pdf.numPages; p++) {
+      const page = await d.pdf.getPage(p);
+      const tc = await page.getTextContent();
+      const nums = [];
+      for (const it of tc.items) {
+        if (!it.str) continue;
+        const parsed = parseNumbers(it.str);
+        for (const n of parsed) {
+          nums.push({ value: n, x: it.transform[4], y: it.transform[5], w: it.width, h: it.height || 8 });
+        }
+      }
+      docPages.push({ docName, pageNum: p, nums });
+    }
+  }
+  
+  await Excel.run(async ctx => {
+    const rng = ctx.workbook.getSelectedRange();
+    rng.load(["values", "rowIndex", "columnIndex", "worksheet/name", "rowCount", "columnCount"]);
+    await ctx.sync();
+    
+    const sheetName = rng.worksheet.name;
+    let tiedCount = 0;
+    
+    for (let r = 0; r < rng.rowCount; r++) {
+      for (let c = 0; c < rng.columnCount; c++) {
+        const val = rng.values[r][c];
+        if (typeof val !== "number" || val === 0) continue;
+        
+        // Search for this number
+        let found = null;
+        for (const page of docPages) {
+          for (const n of page.nums) {
+            if (Math.abs(n.value - Math.abs(val)) < 0.01 || Math.abs(n.value - val) < 0.01) {
+              found = { page, item: n };
+              break;
+            }
+          }
+          if (found) break;
+        }
+        
+        if (found) {
+          const cellAddr = getColLetter(rng.columnIndex + c) + (rng.rowIndex + r + 1);
+          const key = `${sheetName}!${cellAddr}`;
+          const pdfRect = [found.item.x, found.item.y, found.item.x + found.item.w, found.item.y + found.item.h];
+          
+          const cellRng = rng.worksheet.getRangeByIndexes(rng.rowIndex + r, rng.columnIndex + c, 1, 1);
+          cellRng.format.fill.color = "#e8f5e9";
+          cellRng.format.font.color = "#1e7a45";
+          
+          S.registry.set(key, {
+            key, sheet: sheetName, addr: cellAddr, mode: "tieout",
+            value: "✓", doc: found.page.docName, page: found.page.pageNum,
+            rect: pdfRect.map(n => Math.round(n * 100) / 100),
+            raw: String(val), note: `Batch tie-out: ${val}`,
+            ts: new Date().toISOString()
+          });
+          
+          if (Office.context.requirements.isSetSupported("ExcelApi", "1.10")) {
+            try {
+              rng.worksheet.comments.add(key, `[CellSnip TIEOUT]\nTied to ${found.page.docName} p.${found.page.pageNum}\nExact match: ${val}`);
+            } catch(e) {}
+          }
+          tiedCount++;
+        }
+      }
+    }
+    
+    await ctx.sync();
+    await saveRegistry();
+    refreshDocSelect();
+    status(`Batch tie-out: ${tiedCount} cell(s) tied out.`, "ok");
+  }).catch(e => {
+    console.error(e);
+    status("Batch tie-out failed: " + e.message, "err");
+  });
 }
 
 async function autoSnip() {
@@ -1653,7 +1780,7 @@ async function exportOverview(){
     await ctx.sync();
     if (!ws.isNullObject) ws.delete();
     ws = ctx.workbook.worksheets.add("Snip Overview");
-    const header = ["Cell","Type","Value","Source Image","Source document","Page","Note / extracted text","Timestamp"];
+    const header = ["Cell","Type","Value","Source Image","Source document","Page","Note / extracted text","Timestamp","Period"];
     
     ws.getRangeByIndexes(0,0,1,header.length).values = [header];
     ws.getRangeByIndexes(0,0,1,header.length).format.font.bold = true;
@@ -1666,7 +1793,7 @@ async function exportOverview(){
        for (const s of snipsToExport) {
          const raw = (s.raw || "").replace(/\n/g, " ").slice(0, 500);
          const displayKey = rec.multi ? `${rec.key} [${subIdx++}/${snipsToExport.length}]` : rec.key;
-         const rowVals = [[displayKey, rec.mode, s.value, "", s.doc, s.page, (rec.note && !rec.multi ? rec.note+" | ":"")+raw, rec.ts]];
+         const rowVals = [[displayKey, rec.mode, s.value, "", s.doc, s.page, (rec.note && !rec.multi ? rec.note+" | ":"")+raw, rec.ts, S.period || ""]];
          const rng = ws.getRangeByIndexes(rowIdx, 0, 1, header.length);
          rng.values = rowVals;
          rng.format.rowHeight = 80;
@@ -2074,7 +2201,20 @@ function wire(){
   $("btnDeleteSnip").onclick = deleteSnip;
   $("btnAutoMatch").onclick = autoSnip;
   $("btnOverview").onclick = exportOverview;
+  $("btnBatchTieout").onclick = batchTieout;
   $("btnSnipDashboard").onclick = buildDashboard;
+
+  const selPeriod = $("selPeriod");
+  const now = new Date();
+  for (let i = -2; i <= 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    const opt = document.createElement("option");
+    opt.value = label;
+    opt.textContent = label;
+    selPeriod.appendChild(opt);
+  }
+  selPeriod.onchange = e => { S.period = e.target.value; };
   $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
 }
 
