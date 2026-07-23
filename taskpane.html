@@ -245,6 +245,26 @@
   </div>
 </div>
 
+<div id="fieldNameModal" style="display:none; position:absolute; top:30%; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:14px; z-index:1000; border-radius:6px;">
+  <div style="font-weight:bold; margin-bottom:8px;" id="fieldNameTitle">Enter Field Name</div>
+  <input id="fieldNameInput" type="text" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:4px; margin-bottom:8px; box-sizing:border-box;" placeholder="e.g., Invoice Total">
+  <div style="display:flex; justify-content:flex-end; gap:4px;">
+    <button id="btnFieldNameCancel" class="small">Cancel</button>
+    <button id="btnFieldNameOk" class="small" style="background:var(--ok); color:white;">Add Field</button>
+  </div>
+</div>
+
+<div id="saveTemplateModal" style="display:none; position:absolute; top:25%; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:14px; z-index:1000; border-radius:6px;">
+  <div style="font-weight:bold; margin-bottom:8px;">Save Template</div>
+  <label style="font-size:11px; display:block; margin-bottom:4px;">Template Name:</label>
+  <input id="saveTemplateNameInput" type="text" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:4px; margin-bottom:8px; box-sizing:border-box;" placeholder="e.g., G703 Schedule">
+  <label style="font-size:11px; display:block; margin-bottom:4px;">Keywords (comma-separated, for auto-detect):</label>
+  <input id="saveTemplateKeywordsInput" type="text" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:4px; margin-bottom:8px; box-sizing:border-box;" placeholder="e.g., Schedule of Values, Application for Payment">
+  <div style="display:flex; justify-content:flex-end; gap:4px;">
+    <button id="btnSaveTemplateCancel" class="small">Cancel</button>
+    <button id="btnSaveTemplateOk" class="small" style="background:var(--ok); color:white;">Save</button>
+  </div>
+</div>
 <div id="dashboardModal" style="display:none; position:absolute; top:10px; left:10px; right:10px; bottom:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.3); padding:14px; z-index:999; overflow-y:auto; border-radius:6px;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <div style="font-weight:bold; font-size:14px;">📊 Snip Dashboard</div>
@@ -1029,33 +1049,17 @@ async function handleSnip(rect, shiftKey=false){
   if (mode === "template" || mode === "table_template"){
     const isTable = mode === "table_template";
     const defaultLabel = isTable && S.currentTemplate.length === 0 ? "Row Key" : "";
-    let fieldName = prompt(`Enter Field Name for this ${isTable ? 'table column' : 'template zone'} (e.g., '${defaultLabel || 'Invoice Total'}'):`, defaultLabel);
-    if (fieldName === null) {
-      status("Template field canceled.", "err");
-      return;
-    }
-    if (!fieldName.trim()) {
-      fieldName = `Column ${S.currentTemplate.length + 1}`;
-    }
-    S.currentTemplate.push({ fieldName, rect: pdfRect, page: S.page });
-    $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
-    status(`Added field "${fieldName}" to current template.`, "ok");
     
-    // Draw a visual indicator on the canvas
-    const overlay = document.createElement("div");
-    const v = toViewRect(pdfRect);
-    Object.assign(overlay.style, {
-      position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
-      border: "2px solid #0284c7", background: "rgba(2, 132, 199, 0.2)",
-      pointerEvents: "none", zIndex: 10
-    });
-    const lbl = document.createElement("div");
-    lbl.textContent = fieldName;
-    Object.assign(lbl.style, {
-      background: "#0284c7", color: "white", fontSize: "10px", padding: "2px 4px", position: "absolute", top: "-14px", left: "-2px"
-    });
-    overlay.appendChild(lbl);
-    $("overlay").appendChild(overlay);
+    // Show custom modal instead of prompt()
+    $("fieldNameTitle").textContent = `Enter ${isTable ? 'Table Column' : 'Template Field'} Name`;
+    $("fieldNameInput").value = defaultLabel;
+    $("fieldNameInput").placeholder = defaultLabel || "e.g., Invoice Total";
+    $("fieldNameModal").style.display = "block";
+    $("fieldNameInput").focus();
+    
+    // Store pdfRect for use in modal callbacks
+    S._pendingFieldRect = pdfRect;
+    S._pendingFieldPage = S.page;
     
     return; // Don't write to Excel
   } else if (mode === "tickmark"){
@@ -2288,21 +2292,66 @@ function wire(){
     if (e.key === "ArrowRight" && !e.ctrlKey) { $("btnNext").click(); }
   });
   
+  // ---- Field Name Modal callbacks ----
+  function addFieldFromModal() {
+    let fieldName = $("fieldNameInput").value;
+    $("fieldNameModal").style.display = "none";
+    
+    if (!fieldName.trim()) {
+      fieldName = `Column ${S.currentTemplate.length + 1}`;
+    }
+    const pdfRect = S._pendingFieldRect;
+    const page = S._pendingFieldPage;
+    
+    S.currentTemplate.push({ fieldName, rect: pdfRect, page });
+    $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
+    status(`Added field "${fieldName}" to current template.`, "ok");
+    
+    // Draw a visual indicator on the canvas
+    const ov = document.createElement("div");
+    const v = toViewRect(pdfRect);
+    Object.assign(ov.style, {
+      position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
+      border: "2px solid #0284c7", background: "rgba(2, 132, 199, 0.2)",
+      pointerEvents: "none", zIndex: 10
+    });
+    const lbl = document.createElement("div");
+    lbl.textContent = fieldName;
+    Object.assign(lbl.style, {
+      background: "#0284c7", color: "white", fontSize: "10px", padding: "2px 4px", position: "absolute", top: "-14px", left: "-2px"
+    });
+    ov.appendChild(lbl);
+    $("overlay").appendChild(ov);
+  }
+  
+  $("btnFieldNameOk").onclick = addFieldFromModal;
+  $("btnFieldNameCancel").onclick = () => {
+    $("fieldNameModal").style.display = "none";
+    status("Template field canceled.", "err");
+  };
+  $("fieldNameInput").onkeyup = e => { if (e.key === "Enter") addFieldFromModal(); };
+
+  // ---- Save Template (uses custom modal instead of prompt) ----
   $("btnSaveTemplate").onclick = () => {
     if (!S.currentTemplate.length) {
       status("No fields defined for template.", "err");
       return;
     }
-    const name = prompt("Enter a name for this template:");
-    if (!name || !name.trim()) return;
+    $("saveTemplateNameInput").value = "";
+    $("saveTemplateKeywordsInput").value = "";
+    $("saveTemplateModal").style.display = "block";
+    $("saveTemplateNameInput").focus();
+  };
+  
+  function finishSaveTemplate() {
+    const name = $("saveTemplateNameInput").value.trim();
+    if (!name) { status("Template name is required.", "err"); return; }
     
-    // Prompt for keywords for auto-detection
-    const kwInput = prompt("Enter comma-separated keywords to automatically match this template to PDFs (e.g. 'Invoice, Bill To, Due Date'):", "");
+    const kwInput = $("saveTemplateKeywordsInput").value;
     const keywords = kwInput ? kwInput.split(",").map(k => k.trim()).filter(Boolean) : [];
     const isTable = S.mode === "table_template";
     
-    // Ensure saved user templates use the object format so they group correctly
-    S.templates.set(name.trim(), {
+    S.templates.set(name, {
       category: "User Templates",
       keywords: keywords,
       isTable: isTable,
@@ -2310,13 +2359,17 @@ function wire(){
     });
     S.currentTemplate = [];
     $("lblTemplateFields").textContent = `0 fields`;
+    $("saveTemplateModal").style.display = "none";
     status(`Template "${name}" saved!`, "ok");
     
-    saveRegistry(); // persist the template immediately
-    
-    // Clear visual overlays
+    saveRegistry();
     renderPage();
-  };
+  }
+  
+  $("btnSaveTemplateOk").onclick = finishSaveTemplate;
+  $("btnSaveTemplateCancel").onclick = () => $("saveTemplateModal").style.display = "none";
+  $("saveTemplateNameInput").onkeyup = e => { if (e.key === "Enter") $("saveTemplateKeywordsInput").focus(); };
+  $("saveTemplateKeywordsInput").onkeyup = e => { if (e.key === "Enter") finishSaveTemplate(); };
   
   $("btnClearTemplate").onclick = () => {
     S.currentTemplate = [];
