@@ -993,16 +993,30 @@ async function ocrRect(rect, pageObj = S.pageObj, baseScale = S.scale){
    res.data.lines first (falling back to res.data.words) since that's what
    this Tesseract.js build actually populates. */
 async function ocrPageItems(pageObj) {
-  status("Running OCR on scanned page...");
+  status("Running high-res OCR on scanned page...");
   if (!S.ocrWorker){
     S.ocrWorker = await Tesseract.createWorker("eng");
   }
-  const vp = pageObj.getViewport({ scale: 1.5 });
+  
+  // Render page at 2.5x scale for high-DPI text/table recognition
+  const vp = pageObj.getViewport({ scale: 2.5 });
   const c = document.createElement("canvas");
   c.width = Math.ceil(vp.width);
   c.height = Math.ceil(vp.height);
   const ctx = c.getContext("2d");
   await pageObj.render({ canvasContext: ctx, viewport: vp }).promise;
+
+  // Contrast enhancement to clean scan shadows & background noise
+  try {
+    const imgData = ctx.getImageData(0, 0, c.width, c.height);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const avg = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
+      const val = avg < 190 ? Math.max(0, avg - 40) : 255;
+      d[i] = d[i + 1] = d[i + 2] = val;
+    }
+    ctx.putImageData(imgData, 0, 0);
+  } catch(e) { console.error("Contrast enhancement error:", e); }
 
   const res = await S.ocrWorker.recognize(c);
   const rawWords = [];
@@ -1035,10 +1049,8 @@ async function ocrPageItems(pageObj) {
 }
 
 /* Cache ocrPageItems (and the plain text layer, when present) per
-   document+page. Table Match re-checks a page once per candidate row and
-   Extract Forms re-checks it once per field, so without caching a scanned
-   page would get OCR'd over and over. Storing the promise itself (before
-   awaiting it) also de-dupes concurrent lookups for the same page. */
+   document+page. Automatically triggers OCR on scanned/image pages (fewer than 15 text items)
+   or when OCR fallback is checked. */
 async function getCachedPageItems(doc, pageObj, pageNum){
   doc._pageItemsCache = doc._pageItemsCache || {};
   if (doc._pageItemsCache[pageNum]) return doc._pageItemsCache[pageNum];
@@ -1046,14 +1058,23 @@ async function getCachedPageItems(doc, pageObj, pageNum){
   const promise = (async () => {
     const tc = await pageObj.getTextContent();
     const textItems = mapTextItems(tc);
-    if (textItems.length) return { items: textItems, isOcr: false };
-    if ($("chkOCR") && $("chkOCR").checked){
-      try {
-        const ocrItems = await ocrPageItems(pageObj);
-        return { items: ocrItems, isOcr: true };
-      } catch(e) { console.error("Page OCR failed", e); }
+    
+    // If the page has a full text layer (>= 15 items), use it directly unless OCR box is checked
+    if (textItems.length >= 15 && !($("chkOCR") && $("chkOCR").checked)) {
+      return { items: textItems, isOcr: false };
     }
-    return { items: [], isOcr: false };
+    
+    // Page has few/no text items (scanned image page) or OCR is requested
+    try {
+      const ocrItems = await ocrPageItems(pageObj);
+      if (ocrItems.length > 0) {
+        // Merge text layer items and OCR items so no text is lost
+        const combined = [...textItems, ...ocrItems];
+        return { items: combined, isOcr: true };
+      }
+    } catch(e) { console.error("Page OCR failed", e); }
+
+    return { items: textItems, isOcr: false };
   })();
 
   doc._pageItemsCache[pageNum] = promise;
