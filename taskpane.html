@@ -3288,40 +3288,40 @@ async function doSearch() {
 }
 }
 
-Office.onReady(async info=>{
+let isInitStarted = false;
+async function initCellSnip(){
+  if (isInitStarted) return;
+  isInitStarted = true;
   try {
     wire();
-    status("Initializing CellSnip...", "ok");
-    
-    if (info.host && info.host !== Office.HostType.Excel){
-      status("Open this pane inside Excel.", "err");
-      return;
-    }
+    status("Ready — click + PDF or drop a PDF to start.", "ok");
     
     try {
-      Office.context.document.addHandlerAsync(
-        Office.EventType.DocumentSelectionChanged, onSelectionChanged);
+      if (typeof Office !== "undefined" && Office.context && Office.context.document) {
+        Office.context.document.addHandlerAsync(
+          Office.EventType.DocumentSelectionChanged, onSelectionChanged);
+      }
     } catch(e) { console.error("addHandlerAsync failed", e); }
     
     try { await loadRegistry(); } catch(e) { console.error("loadRegistry error", e); }
     try { await loadDocsFromWorkbook(); } catch(e) { console.error("loadDocsFromWorkbook error", e); }
     try { await onSelectionChanged(); } catch(e) { console.error("onSelectionChanged error", e); }
     
-    try {
-      Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
-      Office.context.document.settings.saveAsync();
-    } catch(e){}
-    
-    if (!S.docs.size) {
-      status("Ready — click + PDF or drop a PDF to start.", "ok");
-    } else {
+    if (S.docs && S.docs.size) {
       status(`Ready (${S.docs.size} document(s) loaded).`, "ok");
     }
   } catch(err) {
-    console.error("Office.onReady uncaught error", err);
+    console.error("Initialization error", err);
     status("Ready — click + PDF to start.", "ok");
   }
-});
+}
+
+if (typeof Office !== "undefined") {
+  Office.initialize = function(reason) { initCellSnip(); };
+  try { Office.onReady(() => initCellSnip()); } catch(e){}
+}
+window.addEventListener("DOMContentLoaded", () => initCellSnip());
+setTimeout(() => initCellSnip(), 500);
 </script>
 </body>
 </html>
