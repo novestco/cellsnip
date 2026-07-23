@@ -96,7 +96,8 @@
   <div class="row">
     <span id="brand">Cell<b>Snip</b></span>
     <select id="docSelect" title="Loaded documents"><option value="">— no document —</option></select>
-    <input type="file" id="fileInput" accept=".pdf,application/pdf" multiple title="Choose PDF(s) to add" style="max-width:150px; font-size:11px; color:#e9eef3; cursor:pointer;">
+    <button id="btnOpen" title="Add PDF document" style="background:#0284c7; color:white; border:none; font-weight:bold; padding:4px 8px; font-size:11px;">+ PDF</button>
+    <input type="file" id="fileInput" accept=".pdf,application/pdf" multiple style="display:none">
   </div>
   <div class="row">
     <button id="btnPrev" class="small" title="Previous page">◀</button>
@@ -173,7 +174,7 @@
     <div id="emptyState">
       <div class="big" style="margin-bottom:8px;">No document loaded</div>
       <div style="margin:12px 0;">
-        <input type="file" id="emptyFileInput" accept=".pdf,application/pdf" multiple style="max-width:200px; font-size:12px; cursor:pointer;">
+        <button id="btnEmptyOpen" style="background:#0284c7; color:white; border:none; padding:8px 16px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">📁 Choose PDF File(s)</button>
       </div>
       <p style="font-size:11px; color:#666; margin-top:8px;">Or drag & drop any PDF file directly into this window.</p>
     </div>
@@ -2849,6 +2850,34 @@ function wire(){
     }
   };
   
+  function openFileDialog() {
+    const dialogUrl = "https://novestco.github.io/cellsnip/dialog.html";
+    if (Office.context && Office.context.ui && Office.context.ui.displayDialogAsync) {
+      Office.context.ui.displayDialogAsync(dialogUrl, { height: 45, width: 35, displayInIframe: false }, (asyncResult) => {
+        if (asyncResult.status === Office.AsyncResultStatus.Failed) {
+          console.warn("displayDialogAsync failed, fallback to native picker", asyncResult.error);
+          if ($("fileInput")) $("fileInput").click();
+          return;
+        }
+        const dialog = asyncResult.value;
+        dialog.addEventHandler(Office.EventType.DialogMessageReceived, async (arg) => {
+          try {
+            const data = JSON.parse(arg.message);
+            if (data.name && data.b64) {
+              const bytes = await base64ToArrayBufferAsync(data.b64);
+              await addDoc(data.name, bytes);
+            }
+          } catch(e) { console.error("Dialog message error", e); }
+        });
+      });
+    } else {
+      if ($("fileInput")) $("fileInput").click();
+    }
+  }
+
+  if ($("btnOpen")) $("btnOpen").onclick = openFileDialog;
+  if ($("btnEmptyOpen")) $("btnEmptyOpen").onclick = openFileDialog;
+
   const handleFileSelect = async (files) => {
     for (const f of files) {
       try {
@@ -2860,13 +2889,8 @@ function wire(){
     }
   };
 
-  $("fileInput").onchange = (e) => {
-    if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
-  };
-  
-  const emptyInp = $("emptyFileInput");
-  if (emptyInp) {
-    emptyInp.onchange = (e) => {
+  if ($("fileInput")) {
+    $("fileInput").onchange = (e) => {
       if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
     };
   }
