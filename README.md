@@ -9,7 +9,7 @@ A lightweight Office Add-in that replicates the core DataSnipper workflow: open 
 | **Text snip** | Extracts the text in the box into the selected cell (single numbers are written as real numbers, with $ / commas / parentheses handled) |
 | **Sum snip** | Finds every number in the box and writes the total; the component values are recorded in the snip record and cell comment |
 | **Table snip** (beta) | Splits the boxed text into rows/columns and writes a 2D block starting at the selected cell — works on digital PDFs with a text layer |
-| **Form Template (anchored)** | Draw fields once on a sample document; each field is anchored to its nearby label, not a fixed coordinate, so **Extract Forms** re-finds it on other documents even when the layout has shifted (extra line, rescanned DPI, different page count). Fields whose anchor can't be found on a given document fall back to the original position and the output cell is flagged (amber fill + comment note) so you know to spot-check it |
+| **Form Template (anchored)** | Draw fields once on a sample document (e.g. a G702/G703 pay app or a recurring vendor invoice); each field is anchored to its nearby label, not a fixed coordinate, so **Extract Forms** re-finds it on every other document with the same layout, even scanned ones (falls back to a whole-page OCR pass when there's no text layer, so it works on scanned pay apps/invoices, not just digital PDFs). Fields whose anchor can't be found on a given document fall back to the original position and the output cell is flagged (amber fill + comment note) so you know to spot-check it |
 | **Validation snip (✓)** | Marks the selected cell green as "agreed to source" without overwriting its value |
 | **Exception snip (✗)** | Marks the cell red and prompts for an exception note |
 | **Go to source** | Select any snipped cell → jumps the viewer to the source document, page, and highlighted region |
@@ -68,7 +68,8 @@ Then set the manifest URLs to `https://localhost:3000` and sideload the same way
 
 - **Document matching / auto-reconcile** (matching a whole ledger against a stack of PDFs automatically) is not implemented — snips are manual.
 - Table snip needs a digital text layer; column detection is heuristic, so verify the output.
-- Form Template fields anchor to nearby label text (left of the box, or above for table-style columns); a field with no distinguishable nearby label still falls back to its fixed drawn position.
+- Form Template fields anchor to nearby label text (left of the box, or above for table-style columns); a field with no distinguishable nearby label still falls back to its fixed drawn position. On scanned documents, the anchor label itself has to be read back correctly by OCR to be found again — turn on **OCR fallback** before building *and* before running Extract Forms on scanned forms.
+- Table Match / Table Template (the cost-code line-item grid extraction) still requires a real PDF text layer — it doesn't have the OCR fallback that Form Template fields now do.
 - No confidence/review-queue UI beyond the per-cell amber flag on Extract Forms output — there's no batch summary of low-confidence fields yet.
 - PDFs are cached per machine/browser, not embedded in the workbook. If a colleague opens the file, snip records and the overview travel with it, but they'd need the source PDFs to use "Go to source." (Embedding PDFs in the workbook is possible via base64 in the hidden sheet but bloats file size fast — happy to add it as an option.)
 - Cell comments require Excel 2019+/365 (ExcelApi 1.10); on older builds the snip still works, just without the comment.

@@ -929,21 +929,76 @@ async function extractItems(pdfRect, pageObj = S.pageObj){
   return out;
 }
 
-async function ocrRect(rect){
+async function ocrRect(rect, pageObj = S.pageObj, baseScale = S.scale){
   status("Running OCR…");
   if (!S.ocrWorker){
     S.ocrWorker = await Tesseract.createWorker("eng");
   }
   // crop the region from the PDF at 2x for better accuracy
-  const scale2 = S.scale * 2;
-  const vp2 = S.pageObj.getViewport({scale: scale2});
+  const scale2 = baseScale * 2;
+  const vp2 = pageObj.getViewport({scale: scale2});
   const c = document.createElement("canvas");
   c.width = Math.ceil(rect.w*2); c.height = Math.ceil(rect.h*2);
   const ctx = c.getContext("2d");
   ctx.translate(-rect.x*2, -rect.y*2);
-  await S.pageObj.render({canvasContext: ctx, viewport: vp2}).promise;
+  await pageObj.render({canvasContext: ctx, viewport: vp2}).promise;
   const res = await S.ocrWorker.recognize(c);
   return (res.data.text || "").trim();
+}
+
+/* OCR every word on a whole page (not just a drawn box) so scanned/
+   image-only documents (no PDF text layer) can still use anchor-based
+   fields. Results are cached per document+page since template extraction
+   re-checks the same page for every field on that document. */
+async function ocrPageWords(doc, pageObj, pageNum, scale = 2.0){
+  doc._ocrWordsCache = doc._ocrWordsCache || {};
+  if (doc._ocrWordsCache[pageNum]) return doc._ocrWordsCache[pageNum];
+
+  const promise = (async () => {
+    if (!S.ocrWorker){
+      S.ocrWorker = await Tesseract.createWorker("eng");
+    }
+    const vp = pageObj.getViewport({scale});
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    const ctx = c.getContext("2d");
+    await pageObj.render({canvasContext: ctx, viewport: vp}).promise;
+    // Word-level bounding boxes are opt-in in Tesseract.js v5+ (default output is text-only).
+    const res = await S.ocrWorker.recognize(c, {}, { blocks: true });
+    const words = (res.data && res.data.words) || [];
+    const items = [];
+    for (const w of words){
+      if (!w.text || !w.text.trim()) continue;
+      const b = w.bbox;
+      const p1 = vp.convertToPdfPoint(b.x0, b.y0);
+      const p2 = vp.convertToPdfPoint(b.x1, b.y1);
+      const x1 = Math.min(p1[0], p2[0]), x2 = Math.max(p1[0], p2[0]);
+      const y1 = Math.min(p1[1], p2[1]), y2 = Math.max(p1[1], p2[1]);
+      items.push({ str: w.text, x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+    }
+    // OCR gives one box per word, but a usable anchor is usually a whole
+    // label ("Application Date", not just "Date"). Merge words that sit
+    // close together on the same row so anchors are as distinctive as the
+    // multi-word text runs a real PDF text layer would give us.
+    return mergeAdjacentWords(items);
+  })();
+
+  doc._ocrWordsCache[pageNum] = promise;
+  return promise;
+}
+
+/* Text items to use for anchor detection/resolution on a page: the PDF's
+   real text layer when it has one, otherwise a whole-page OCR pass (only
+   if OCR fallback is enabled) for scanned documents. */
+async function getPageAnchorItems(doc, pageObj, pageNum){
+  const tc = await pageObj.getTextContent();
+  const items = mapTextItems(tc);
+  if (items.length > 3) return items;
+  if ($("chkOCR") && $("chkOCR").checked){
+    try { return await ocrPageWords(doc, pageObj, pageNum); }
+    catch(e) { console.error("Page OCR failed", e); }
+  }
+  return items;
 }
 
 /* text items -> single string (joins rows with newline) */
@@ -966,6 +1021,36 @@ function groupRows(items){
   return rows.map(r => r.items.sort((a,b)=>a.x-b.x));
 }
 const median = a => { if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+
+/* Merge OCR word boxes that sit close together on the same row into a
+   single phrase-like item, so a label like "Application Date" reads as one
+   anchor instead of two ambiguous single-word ones. Stops merging once a
+   gap is wider than typical inter-word spacing (i.e. it's actually the
+   start of a separate label/value in the next column). */
+function mergeAdjacentWords(items){
+  if (!items.length) return items;
+  const rows = groupRows(items);
+  const merged = [];
+  for (const row of rows){
+    let cur = null;
+    for (const it of row){
+      if (cur){
+        const gap = it.x - (cur.x + cur.w);
+        const gapLimit = Math.max(cur.h, it.h) * 0.6;
+        if (gap <= gapLimit && (cur.str.length + it.str.length) < 60){
+          cur.str += " " + it.str;
+          cur.w = (it.x + it.w) - cur.x;
+          cur.h = Math.max(cur.h, it.h);
+          continue;
+        }
+      }
+      if (cur) merged.push(cur);
+      cur = { str: it.str, x: it.x, y: it.y, w: it.w, h: it.h };
+    }
+    if (cur) merged.push(cur);
+  }
+  return merged;
+}
 
 /* ---------------- anchor-based template fields ----------------
    A template field is drawn once as an absolute box, but that box only
@@ -1045,16 +1130,30 @@ async function resolveFieldRect(doc, field){
   const pages = [preferredPage];
   for (let p = 1; p <= doc.pdf.numPages; p++) if (p !== preferredPage) pages.push(p);
 
+  // OCR-ing every page of a large scanned document while hunting for a
+  // missing anchor would be very slow; cap how many un-cached OCR passes
+  // one field resolution is allowed to trigger.
+  let ocrBudget = 8;
+
   for (const p of pages){
-    let tc;
+    let pageObj, items;
     try {
-      const pageObj = await doc.pdf.getPage(p);
-      tc = await pageObj.getTextContent();
+      pageObj = await doc.pdf.getPage(p);
+      const hasCachedOcr = doc._ocrWordsCache && doc._ocrWordsCache[p];
+      if (!hasCachedOcr && ocrBudget <= 0){
+        const tc = await pageObj.getTextContent();
+        items = mapTextItems(tc);
+        if (!items.length) continue; // out of OCR budget, skip un-OCR'd pages
+      } else {
+        const tc = await pageObj.getTextContent();
+        items = mapTextItems(tc);
+        if (items.length <= 3 && !hasCachedOcr) ocrBudget--;
+        if (items.length <= 3) items = await getPageAnchorItems(doc, pageObj, p);
+      }
     } catch(e) { continue; }
 
     let best = null, bestScore = -1;
-    for (const it of tc.items){
-      if (!it.str || !it.str.trim()) continue;
+    for (const it of items){
       const normStr = normalizeAnchorText(it.str);
       if (!normStr) continue;
       let score = -1;
@@ -1064,10 +1163,8 @@ async function resolveFieldRect(doc, field){
     }
 
     if (best && bestScore >= 50){
-      const x = best.transform[4], y = best.transform[5];
-      const w = best.width || 0;
-      const basisX = field.anchor.side === "left" ? x + w : x;
-      const basisY = y;
+      const basisX = field.anchor.side === "left" ? best.x + best.w : best.x;
+      const basisY = best.y;
       const [dx1, dy1, dx2, dy2] = field.anchor.offset;
       return {
         rect: [basisX + dx1, basisY + dy1, basisX + dx2, basisY + dy2],
@@ -2532,7 +2629,7 @@ function wire(){
                   const a = vp.convertToViewportPoint(useRect[0], useRect[1]);
                   const b = vp.convertToViewportPoint(useRect[2], useRect[3]);
                   const vRect = { x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1]) };
-                  raw = await ocrRect(vRect, pageObj);
+                  raw = await ocrRect(vRect, pageObj, S.scale || 1.0);
                 }
 
                 extracted = raw ? (coerce(raw) ?? raw) : "";
@@ -2644,8 +2741,10 @@ function wire(){
     // on other documents even if their layout has shifted slightly.
     let anchor = null;
     try {
-      const tc = await S.pageObj.getTextContent();
-      const items = mapTextItems(tc);
+      const curDoc = S.docs.get(S.cur);
+      // Falls back to a whole-page OCR pass when the source has no text
+      // layer (a scanned invoice/pay app) and OCR fallback is enabled.
+      const items = await getPageAnchorItems(curDoc, S.pageObj, S.page);
       const found = findAnchorForRect(items, pdfRect);
       if (found) {
         anchor = {
