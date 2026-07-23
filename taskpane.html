@@ -2197,12 +2197,17 @@ function wire(){
         const str = it.str.trim();
         if (!str) continue;
         
-        const matchedReq = keysToFind.find(req => req.key === str);
+        const normStr = str.toLowerCase().replace(/[\s\xA0]+/g, "");
+        const matchedReq = keysToFind.find(req => {
+          const normReq = req.key.toLowerCase().replace(/[\s\xA0]+/g, "");
+          return normStr === normReq || (normStr.length > 2 && normReq.length > 2 && normStr.includes(normReq));
+        });
+        
         if (matchedReq) {
           const x = it.transform[4];
           if (x >= kx1 && x <= kx2) {
             matchResults.push({
-              key: str,
+              key: matchedReq.key,
               rowOffset: matchedReq.rowOffset,
               page: p,
               pageObj: pageObj,
