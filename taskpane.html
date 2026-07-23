@@ -28,7 +28,7 @@
   html,body{height:100%}
   body{
     font-family:"Segoe UI",system-ui,sans-serif;color:var(--ink);
-    display:flex;flex-direction:column;background:var(--paper);overflow:hidden;
+    display:flex;flex-direction:column;background:var(--paper);overflow:hidden;position:relative;
   }
   /* ---------- top chrome ---------- */
   #chrome{background:var(--ink);color:#e9eef3;padding:8px 10px;flex:0 0 auto}
@@ -1346,7 +1346,7 @@ async function handleSnip(rect, shiftKey=false){
   const pdfRect = toPdfRect(rect);
   let items = [], raw = "";
   if (mode !== "image" && mode !== "template" && mode !== "table_template" && mode !== "tickmark") {
-    items = await extractItems(pdfRect);
+    items = await extractItemsAny(pdfRect, S.docs.get(S.cur), S.pageObj, S.page);
     raw = itemsToText(items);
     if (!raw && $("chkOCR").checked){
       try { raw = await ocrRect(rect); }
@@ -2913,7 +2913,15 @@ function wire(){
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
       b.classList.add("active"); S.mode = b.dataset.mode;
       updateSelRectColor();
-      $("templateOptions").style.display = (S.mode === "template" || S.mode === "table_template") ? "flex" : "none";
+      const isTemplating = (S.mode === "template" || S.mode === "table_template");
+      if ($("templateOptions")) $("templateOptions").style.display = isTemplating ? "flex" : "none";
+      if (isTemplating) {
+        if (!S.currentTemplate) S.currentTemplate = [];
+        if ($("lblTemplateFields")) $("lblTemplateFields").textContent = `${S.currentTemplate.length} field(s)`;
+        status(S.mode === "template" 
+          ? "Form Template mode: Drag a selection box over any value on the PDF to add a field." 
+          : "Table Template mode: Drag a selection box over table columns on the PDF to define them.", "ok");
+      }
     };
   });
   
