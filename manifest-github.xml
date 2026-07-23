@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+
+  <Id>07517983-9fb0-4a02-a9ad-7ec9b93823e1</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Kevin Keane</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="CellSnip"/>
+  <Description DefaultValue="Snip values from PDF support directly into Excel cells with a traceable link back to the source document."/>
+  <IconUrl DefaultValue="https://novestco.github.io/cellsnip/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://novestco.github.io/cellsnip/icon-80.png"/>
+  <SupportUrl DefaultValue="https://novestco.github.io/cellsnip"/>
+
+  <Hosts>
+    <Host Name="Workbook"/>
+  </Hosts>
+
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="ExcelApi" MinVersion="1.1"/>
+    </Sets>
+  </Requirements>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://novestco.github.io/cellsnip/taskpane.html"/>
+  </DefaultSettings>
+
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <AppDomains>
+    <AppDomain>https://novestco.github.io</AppDomain>
+  </AppDomains>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="CellSnip.Group1">
+                <Label resid="CellSnip.GroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="CellSnip.Icon16"/>
+                  <bt:Image size="32" resid="CellSnip.Icon32"/>
+                  <bt:Image size="80" resid="CellSnip.Icon80"/>
+                </Icon>
+                <Control xsi:type="Button" id="CellSnip.TaskpaneButton">
+                  <Label resid="CellSnip.TaskpaneButtonLabel"/>
+                  <Supertip>
+                    <Title resid="CellSnip.TaskpaneButtonLabel"/>
+                    <Description resid="CellSnip.TaskpaneButtonTooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="CellSnip.Icon16"/>
+                    <bt:Image size="32" resid="CellSnip.Icon32"/>
+                    <bt:Image size="80" resid="CellSnip.Icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>CellSnipPane</TaskpaneId>
+                    <SourceLocation resid="CellSnip.Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="CellSnip.Icon16" DefaultValue="https://novestco.github.io/cellsnip/icon-16.png"/>
+        <bt:Image id="CellSnip.Icon32" DefaultValue="https://novestco.github.io/cellsnip/icon-32.png"/>
+        <bt:Image id="CellSnip.Icon80" DefaultValue="https://novestco.github.io/cellsnip/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="CellSnip.Taskpane.Url" DefaultValue="https://novestco.github.io/cellsnip/taskpane.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="CellSnip.GroupLabel" DefaultValue="CellSnip"/>
+        <bt:String id="CellSnip.TaskpaneButtonLabel" DefaultValue="Open CellSnip"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="CellSnip.TaskpaneButtonTooltip" DefaultValue="Snip values from PDF support into cells with a link back to the source."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
