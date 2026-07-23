@@ -200,8 +200,8 @@
   <div id="status">Loading…</div>
 </div>
 
-<input type="file" id="fileInput" accept="application/pdf" multiple style="display:none">
-<input type="file" id="bulkRollInput" accept="application/pdf" multiple style="display:none">
+<input type="file" id="fileInput" accept=".pdf,application/pdf" multiple style="display:none">
+<input type="file" id="bulkRollInput" accept=".pdf,application/pdf" multiple style="display:none">
 
 <div id="bulkRollModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
   <div style="font-weight:bold; margin-bottom:8px;">Bulk Roll-Forward Wizard</div>
@@ -410,13 +410,15 @@ async function loadDocsFromWorkbook() {
 async function addDoc(name, bytes, persist=true, folder=""){
   try{
     const uint8 = new Uint8Array(bytes);
-    const pdf = await pdfjsLib.getDocument({data: uint8.slice()}).promise;
+    const pdf = await pdfjsLib.getDocument({data: uint8}).promise;
     S.docs.set(name, {bytes: uint8.buffer, pdf, folder});
     if (persist) {
       saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
+      await switchDoc(name); // Always switch viewer to the newly uploaded document!
+    } else if (!S.cur) {
+      await switchDoc(name);
     }
     refreshDocSelect();
-    if (!S.cur) await switchDoc(name);
     status(`Loaded ${name} (${pdf.numPages} pages) — detecting template...`, "ok");
     
     // Auto-detect and assign template
