@@ -45,6 +45,10 @@
   button:hover{background:#31485f}
   button:disabled{opacity:.45;cursor:default}
   button.small{padding:3px 6px;font-size:11px}
+  #fileInput::file-selector-button {
+    background:#0284c7; color:white; border:none; border-radius:3px;
+    padding:3px 7px; font-size:11px; font-weight:bold; cursor:pointer; margin-right:4px;
+  }
   /* snip mode buttons */
   #modes{display:flex;gap:4px;flex-wrap:wrap}
   .mode{flex:1;text-align:center;border-width:1px;font-weight:600}
@@ -92,10 +96,7 @@
   <div class="row">
     <span id="brand">Cell<b>Snip</b></span>
     <select id="docSelect" title="Loaded documents"><option value="">— no document —</option></select>
-    <label id="btnOpen" class="button" title="Open PDF(s)" style="position:relative; cursor:pointer; overflow:hidden; display:inline-flex; align-items:center; justify-content:center; margin:0; padding:4px 8px; font-size:11px; font-weight:600;">
-      + PDF
-      <input type="file" id="fileInput" accept=".pdf,application/pdf" multiple style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
-    </label>
+    <input type="file" id="fileInput" accept=".pdf,application/pdf" multiple title="Choose PDF(s) to add" style="max-width:150px; font-size:11px; color:#e9eef3; cursor:pointer;">
   </div>
   <div class="row">
     <button id="btnPrev" class="small" title="Previous page">◀</button>
@@ -170,10 +171,11 @@
   </div>
   <div id="viewerWrap">
     <div id="emptyState">
-      <div class="big">No document loaded</div>
-      Click <b>+ PDF</b> to open invoices, bank statements, or subledgers.<br>
-      Select a cell in Excel, pick a snip mode, then drag a box on the page.<br>
-      Documents are saved securely in this workbook and will reload next time you open it.
+      <div class="big" style="margin-bottom:8px;">No document loaded</div>
+      <div style="margin:12px 0;">
+        <input type="file" id="emptyFileInput" accept=".pdf,application/pdf" multiple style="max-width:200px; font-size:12px; cursor:pointer;">
+      </div>
+      <p style="font-size:11px; color:#666; margin-top:8px;">Or drag & drop any PDF file directly into this window.</p>
     </div>
     <div id="pageBox" style="display:none">
       <canvas id="pdfCanvas"></canvas>
@@ -2847,13 +2849,27 @@ function wire(){
     }
   };
   
-  $("fileInput").onchange = async e=>{
-    for (const f of e.target.files){
-      const bytes = await f.arrayBuffer();
-      await addDoc(f.name, bytes);
+  const handleFileSelect = async (files) => {
+    for (const f of files) {
+      try {
+        const bytes = await f.arrayBuffer();
+        await addDoc(f.name, bytes);
+      } catch(err) {
+        status(`Error reading ${f.name}: ${err.message}`, "err");
+      }
     }
-    e.target.value = "";
   };
+
+  $("fileInput").onchange = (e) => {
+    if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
+  };
+  
+  const emptyInp = $("emptyFileInput");
+  if (emptyInp) {
+    emptyInp.onchange = (e) => {
+      if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
+    };
+  }
   $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
   $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
   $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
