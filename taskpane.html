@@ -991,14 +991,20 @@ async function ocrPageItems(pageObj) {
   if (!S.ocrWorker){
     S.ocrWorker = await Tesseract.createWorker("eng");
   }
-  const vp = pageObj.getViewport({ scale: 1.5 });
+  // Financial tables (e.g. a G703 continuation sheet) pack a lot of small
+  // text into a tight grid — 1.5x was too low-res to read reliably, so
+  // this renders at a higher scale for finer detail.
+  const vp = pageObj.getViewport({ scale: 2.5 });
   const c = document.createElement("canvas");
   c.width = Math.ceil(vp.width);
   c.height = Math.ceil(vp.height);
   const ctx = c.getContext("2d");
   await pageObj.render({ canvasContext: ctx, viewport: vp }).promise;
 
-  const res = await S.ocrWorker.recognize(c);
+  // Word/line-level output is opt-in on some Tesseract.js builds (default
+  // is text-only) — request it explicitly instead of relying on whatever
+  // this CDN build happens to populate by default.
+  const res = await S.ocrWorker.recognize(c, {}, { blocks: true });
   const rawWords = [];
   if (res.data) {
     if (res.data.lines && res.data.lines.length) {
@@ -1014,7 +1020,7 @@ async function ocrPageItems(pageObj) {
     }
   }
 
-  return rawWords.map(w => {
+  const items = rawWords.map(w => {
     const bbox = w.bbox || { x0: 0, y0: 0, x1: 100, y1: 20 };
     const p1 = vp.convertToPdfPoint(bbox.x0, bbox.y0);
     const p2 = vp.convertToPdfPoint(bbox.x1, bbox.y1);
@@ -1026,6 +1032,15 @@ async function ocrPageItems(pageObj) {
       h: Math.abs(p2[1] - p1[1])
     };
   }).filter(i => i.str);
+
+  if (!items.length) {
+    // Tesseract ran but returned nothing usable — surface it instead of
+    // letting the caller silently fall through to a generic "no matches"
+    // with zero clue why.
+    console.warn("OCR produced zero words for this page. res.data:", res.data);
+    throw new Error("OCR ran but returned no readable text on this page (image may be too low-res, or the page is blank)");
+  }
+  return items;
 }
 
 /* Cache ocrPageItems (and the plain text layer, when present) per
@@ -1045,7 +1060,10 @@ async function getCachedPageItems(doc, pageObj, pageNum){
       try {
         const ocrItems = await ocrPageItems(pageObj);
         return { items: ocrItems, isOcr: true };
-      } catch(e) { console.error("Page OCR failed", e); }
+      } catch(e) {
+        console.error("Page OCR failed", e);
+        status(`OCR failed on page ${pageNum}: ${e.message || e}`, "err");
+      }
     }
     return { items: [], isOcr: false };
   })();
@@ -2492,6 +2510,9 @@ function wire(){
     
     if (keysToFind.length === 0) {
       status("No keys found in Excel selection.", "err");
+      return;
+    }
+
     // Helper to normalize strings (remove spaces, hyphens, en-dashes, em-dashes, and normalize O/0, I/1 for OCR)
     const norm = str => String(str).toLowerCase()
       .replace(/[oO]/g, "0")
