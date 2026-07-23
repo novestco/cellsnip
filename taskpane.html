@@ -946,6 +946,34 @@ async function ocrRect(rect){
   return (res.data.text || "").trim();
 }
 
+async function ocrPageItems(pageObj) {
+  status("Running OCR on scanned page...");
+  if (!S.ocrWorker){
+    S.ocrWorker = await Tesseract.createWorker("eng");
+  }
+  const vp = pageObj.getViewport({ scale: 1.5 });
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(vp.width);
+  c.height = Math.ceil(vp.height);
+  const ctx = c.getContext("2d");
+  await pageObj.render({ canvasContext: ctx, viewport: vp }).promise;
+  
+  const res = await S.ocrWorker.recognize(c);
+  const words = (res.data && res.data.words) ? res.data.words : [];
+  
+  return words.map(w => {
+    const p1 = vp.convertToPdfPoint(w.bbox.x0, w.bbox.y0);
+    const p2 = vp.convertToPdfPoint(w.bbox.x1, w.bbox.y1);
+    return {
+      str: w.text ? w.text.trim() : "",
+      x: Math.min(p1[0], p2[0]),
+      y: Math.min(p1[1], p2[1]),
+      w: Math.abs(p2[0] - p1[0]),
+      h: Math.abs(p2[1] - p1[1])
+    };
+  }).filter(i => i.str);
+}
+
 /* text items -> single string (joins rows with newline) */
 function itemsToText(items){
   if (!items.length) return "";
@@ -2216,13 +2244,19 @@ function wire(){
     for (let p = 1; p <= doc.pdf.numPages; p++) {
       const pageObj = await doc.pdf.getPage(p);
       const tc = await pageObj.getTextContent();
-      const validItems = tc.items.filter(it => it.str && it.str.trim()).map(it => ({
+      let validItems = tc.items.filter(it => it.str && it.str.trim()).map(it => ({
         str: it.str.trim(),
         x: it.transform[4],
         y: it.transform[5],
         w: it.width || 40,
         h: it.height || Math.abs(it.transform[3]) || 10
       }));
+      
+      if (!validItems.length) {
+        try {
+          validItems = await ocrPageItems(pageObj);
+        } catch(e) { console.error("OCR page fallback failed", e); }
+      }
       
       if (!validItems.length) continue;
       
