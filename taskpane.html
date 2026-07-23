@@ -1385,8 +1385,18 @@ async function handleSnip(rect, shiftKey=false){
     value = nums.reduce((a,b)=>a+b, 0);
     note = `Sum of ${nums.length} value(s): ${nums.join(", ")}`;
   } else if (mode === "table"){
-    if (!items.length){ status("Table snip needs a text layer (not available via OCR).", "err"); return; }
+    if (!items || !items.length){
+      status("Extracting table via OCR...", "ok");
+      try {
+        const pageItems = await ocrPageItems(S.pageObj);
+        if (pageItems && pageItems.length) {
+          items = filterItemsInRect(pageItems, pdfRect);
+        }
+      } catch(e) { console.error("OCR table error", e); }
+    }
+    if (!items || !items.length){ status("No text items found in table selection box.", "err"); return; }
     value = itemsToTable(items);
+    note = `Extracted table (${value.length} row(s))`;
   } else if (mode === "tieout" || mode === "variance"){
     // Compare PDF-extracted numeric value to current Excel cell value
     const pdfNums = raw ? parseNumbers(raw) : [];
@@ -2933,6 +2943,18 @@ function wire(){
         status(S.mode === "template" 
           ? "Form Template mode: Drag a selection box over any value on the PDF to add a field." 
           : "Table Template mode: Drag a selection box over table columns on the PDF to define them.", "ok");
+      } else if (S.mode === "table") {
+        status("Table mode active: Drag a selection box around any table on the PDF to extract rows & columns into Excel.", "ok");
+      } else if (S.mode === "text") {
+        status("Text mode active: Drag a box around text on the PDF to snip into the active Excel cell.", "ok");
+      } else if (S.mode === "sum") {
+        status("Sum mode active: Drag a box around numbers to sum them into the active Excel cell.", "ok");
+      } else if (S.mode === "image") {
+        status("Image mode active: Drag a box to capture an image region into Excel.", "ok");
+      } else if (S.mode === "tieout") {
+        status("Tie-out mode active: Drag a box to verify an Excel cell value against the PDF.", "ok");
+      } else if (S.mode === "variance") {
+        status("Variance mode active: Drag a box to record a variance note on an Excel cell.", "ok");
       }
     };
   });
