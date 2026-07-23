@@ -912,40 +912,58 @@ function toViewRect(pdfRect){
 "use strict";
 
 /* ---------------- text extraction ---------------- */
-async function extractItems(pdfRect, pageObj = S.pageObj){
-  // returns text items inside pdfRect: [{str,x,y,w,h}]
-  const tc = await pageObj.getTextContent();
+
+/* Keep only items whose center falls inside pdfRect, sorted top-to-bottom
+   (PDF y is bottom-up) then left-to-right. Shared by the PDF text layer and
+   the OCR word fallback so both produce identically-shaped item lists. */
+function filterItemsInRect(items, pdfRect){
   const out = [];
-  for (const it of tc.items){
-    if (!it.str || !it.str.trim()) continue;
-    const x = it.transform[4], y = it.transform[5];
-    const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
-    const cx = x + w/2, cy = y + h/2;                    // item center
+  for (const it of items){
+    const cx = it.x + it.w/2, cy = it.y + it.h/2;
     if (cx >= pdfRect[0] && cx <= pdfRect[2] && cy >= pdfRect[1] && cy <= pdfRect[3])
-      out.push({str: it.str, x, y, w, h});
+      out.push(it);
   }
-  // sort: top-to-bottom (pdf y is up), then left-to-right
   out.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
   return out;
 }
 
-async function ocrRect(rect){
+async function extractItems(pdfRect, pageObj = S.pageObj){
+  // returns text items inside pdfRect: [{str,x,y,w,h}]
+  const tc = await pageObj.getTextContent();
+  return filterItemsInRect(mapTextItems(tc), pdfRect);
+}
+
+/* Same as extractItems, but falls back to a cached whole-page OCR pass
+   (see getCachedPageItems) when the page has no text layer, so table/form
+   value extraction works on scanned documents too. doc/pageNum key the
+   cache — the same page is otherwise checked once per row/field. */
+async function extractItemsAny(pdfRect, doc, pageObj, pageNum){
+  const { items } = await getCachedPageItems(doc, pageObj, pageNum);
+  return filterItemsInRect(items, pdfRect);
+}
+
+async function ocrRect(rect, pageObj = S.pageObj, baseScale = S.scale){
   status("Running OCR…");
   if (!S.ocrWorker){
     S.ocrWorker = await Tesseract.createWorker("eng");
   }
   // crop the region from the PDF at 2x for better accuracy
-  const scale2 = S.scale * 2;
-  const vp2 = S.pageObj.getViewport({scale: scale2});
+  const scale2 = baseScale * 2;
+  const vp2 = pageObj.getViewport({scale: scale2});
   const c = document.createElement("canvas");
   c.width = Math.ceil(rect.w*2); c.height = Math.ceil(rect.h*2);
   const ctx = c.getContext("2d");
   ctx.translate(-rect.x*2, -rect.y*2);
-  await S.pageObj.render({canvasContext: ctx, viewport: vp2}).promise;
+  await pageObj.render({canvasContext: ctx, viewport: vp2}).promise;
   const res = await S.ocrWorker.recognize(c);
   return (res.data.text || "").trim();
 }
 
+/* OCR every word on a whole page (not just a drawn box) — needed so
+   scanned/image-only documents (no PDF text layer) work for Table Match
+   row-key search, form-field anchors, and value extraction alike. Reads
+   res.data.lines first (falling back to res.data.words) since that's what
+   this Tesseract.js build actually populates. */
 async function ocrPageItems(pageObj) {
   status("Running OCR on scanned page...");
   if (!S.ocrWorker){
@@ -957,7 +975,7 @@ async function ocrPageItems(pageObj) {
   c.height = Math.ceil(vp.height);
   const ctx = c.getContext("2d");
   await pageObj.render({ canvasContext: ctx, viewport: vp }).promise;
-  
+
   const res = await S.ocrWorker.recognize(c);
   const rawWords = [];
   if (res.data) {
@@ -973,7 +991,7 @@ async function ocrPageItems(pageObj) {
       rawWords.push(...res.data.words);
     }
   }
-  
+
   return rawWords.map(w => {
     const bbox = w.bbox || { x0: 0, y0: 0, x1: 100, y1: 20 };
     const p1 = vp.convertToPdfPoint(bbox.x0, bbox.y0);
@@ -986,6 +1004,43 @@ async function ocrPageItems(pageObj) {
       h: Math.abs(p2[1] - p1[1])
     };
   }).filter(i => i.str);
+}
+
+/* Cache ocrPageItems (and the plain text layer, when present) per
+   document+page. Table Match re-checks a page once per candidate row and
+   Extract Forms re-checks it once per field, so without caching a scanned
+   page would get OCR'd over and over. Storing the promise itself (before
+   awaiting it) also de-dupes concurrent lookups for the same page. */
+async function getCachedPageItems(doc, pageObj, pageNum){
+  doc._pageItemsCache = doc._pageItemsCache || {};
+  if (doc._pageItemsCache[pageNum]) return doc._pageItemsCache[pageNum];
+
+  const promise = (async () => {
+    const tc = await pageObj.getTextContent();
+    const textItems = mapTextItems(tc);
+    if (textItems.length) return { items: textItems, isOcr: false };
+    if ($("chkOCR") && $("chkOCR").checked){
+      try {
+        const ocrItems = await ocrPageItems(pageObj);
+        return { items: ocrItems, isOcr: true };
+      } catch(e) { console.error("Page OCR failed", e); }
+    }
+    return { items: [], isOcr: false };
+  })();
+
+  doc._pageItemsCache[pageNum] = promise;
+  return promise;
+}
+
+/* Text items for anchor/label search: raw text-layer/OCR items (see
+   getCachedPageItems), except OCR words are merged into phrase-like tokens
+   (see mergeAdjacentWords) so a label reads as one distinctive anchor
+   instead of several ambiguous single words. A real text layer's runs are
+   already phrase-sized ("Application Date:"), so only the OCR path needs
+   merging. */
+async function getPageAnchorItems(doc, pageObj, pageNum){
+  const { items, isOcr } = await getCachedPageItems(doc, pageObj, pageNum);
+  return isOcr ? mergeAdjacentWords(items) : items;
 }
 
 /* text items -> single string (joins rows with newline) */
@@ -1008,6 +1063,162 @@ function groupRows(items){
   return rows.map(r => r.items.sort((a,b)=>a.x-b.x));
 }
 const median = a => { if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+
+/* Merge OCR word boxes that sit close together on the same row into a
+   single phrase-like item, so a label like "Application Date" reads as one
+   anchor instead of two ambiguous single-word ones. Stops merging once a
+   gap is wider than typical inter-word spacing (i.e. it's actually the
+   start of a separate label/value in the next column). */
+function mergeAdjacentWords(items){
+  if (!items.length) return items;
+  const rows = groupRows(items);
+  const merged = [];
+  for (const row of rows){
+    let cur = null;
+    for (const it of row){
+      if (cur){
+        const gap = it.x - (cur.x + cur.w);
+        const gapLimit = Math.max(cur.h, it.h) * 0.6;
+        if (gap <= gapLimit && (cur.str.length + it.str.length) < 60){
+          cur.str += " " + it.str;
+          cur.w = (it.x + it.w) - cur.x;
+          cur.h = Math.max(cur.h, it.h);
+          continue;
+        }
+      }
+      if (cur) merged.push(cur);
+      cur = { str: it.str, x: it.x, y: it.y, w: it.w, h: it.h };
+    }
+    if (cur) merged.push(cur);
+  }
+  return merged;
+}
+
+/* ---------------- anchor-based template fields ----------------
+   A template field is drawn once as an absolute box, but that box only
+   works on the exact document it was drawn on. Documents from the same
+   vendor/form almost never line up pixel-for-pixel (extra line, different
+   font width, rescanned at a different DPI), so instead of trusting the
+   raw coordinates we anchor each field to its nearby label and re-find
+   that label on every document, recomputing the box from wherever the
+   label actually landed. */
+function normalizeAnchorText(s){
+  return String(s || "").toLowerCase().replace(/[\s\xA0]+/g, " ").trim();
+}
+
+function mapTextItems(tc){
+  return tc.items.filter(it => it.str && it.str.trim()).map(it => ({
+    str: it.str.trim(),
+    x: it.transform[4],
+    y: it.transform[5],
+    w: it.width || 40,
+    h: it.height || Math.abs(it.transform[3]) || 10
+  }));
+}
+
+/* Find the nearest label to a drawn field box: a same-row item ending at/
+   before the box's left edge (typical "Label: ____" form), or an item
+   directly above (typical table column header). */
+function findAnchorForRect(items, rect){
+  const [x1, y1, x2, y2] = rect;
+  const boxH = Math.max(y2 - y1, 1);
+  const boxW = Math.max(x2 - x1, 1);
+
+  let bestLeft = null, bestLeftDist = Infinity;
+  let bestTop = null, bestTopDist = Infinity;
+
+  for (const it of items){
+    const iy1 = it.y, iy2 = it.y + it.h;
+    const ix2 = it.x + it.w;
+
+    // same row, ends at/before the box's left edge
+    const vOverlap = Math.min(iy2, y2) - Math.max(iy1, y1);
+    if (ix2 <= x1 + 3 && vOverlap > -boxH * 0.5){
+      const dist = x1 - ix2;
+      if (dist > -5 && dist < bestLeftDist){ bestLeftDist = dist; bestLeft = it; }
+    }
+
+    // directly above (PDF y-axis points up), overlapping horizontally
+    const hOverlap = Math.min(ix2, x2) - Math.max(it.x, x1);
+    if (it.y >= y2 - 3 && hOverlap > -boxW * 0.3){
+      const dist = it.y - y2;
+      if (dist > -5 && dist < bestTopDist){ bestTopDist = dist; bestTop = it; }
+    }
+  }
+
+  if (bestLeft && bestLeftDist < 160){
+    return { text: bestLeft.str.trim(), side: "left", basisX: bestLeft.x + bestLeft.w, basisY: bestLeft.y };
+  }
+  if (bestTop && bestTopDist < 60){
+    return { text: bestTop.str.trim(), side: "top", basisX: bestTop.x, basisY: bestTop.y };
+  }
+  return null;
+}
+
+/* Re-locate a template field on a document by searching for its anchor text
+   (checking the recorded page first, then every other page, so a form that
+   gained/lost a cover page doesn't break the field) instead of trusting the
+   absolute coordinates it was drawn at. Falls back to the original rect/page
+   if no anchor is recorded (legacy templates) or the anchor text can't be
+   found on this document at all. */
+async function resolveFieldRect(doc, field){
+  const fallback = { rect: field.rect, page: field.page || 1, confidence: "position" };
+  if (!field.anchor || !field.anchor.text) return fallback;
+
+  const normTarget = normalizeAnchorText(field.anchor.text);
+  if (!normTarget) return fallback;
+
+  const preferredPage = field.page || 1;
+  const pages = [preferredPage];
+  for (let p = 1; p <= doc.pdf.numPages; p++) if (p !== preferredPage) pages.push(p);
+
+  // OCR-ing every page of a large scanned document while hunting for a
+  // missing anchor would be very slow; cap how many un-cached OCR passes
+  // one field resolution is allowed to trigger.
+  let ocrBudget = 8;
+
+  for (const p of pages){
+    let pageObj, items;
+    try {
+      pageObj = await doc.pdf.getPage(p);
+      const tc = await pageObj.getTextContent();
+      const textItems = mapTextItems(tc);
+      if (textItems.length){
+        items = textItems; // real text layer, no OCR needed
+      } else {
+        const hasCachedOcr = !!(doc._pageItemsCache && doc._pageItemsCache[p]);
+        if (!hasCachedOcr && ocrBudget <= 0){
+          items = textItems; // out of OCR budget, skip un-OCR'd pages
+        } else {
+          if (!hasCachedOcr) ocrBudget--;
+          items = await getPageAnchorItems(doc, pageObj, p);
+        }
+      }
+    } catch(e) { continue; }
+
+    let best = null, bestScore = -1;
+    for (const it of items){
+      const normStr = normalizeAnchorText(it.str);
+      if (!normStr) continue;
+      let score = -1;
+      if (normStr === normTarget) score = 100;
+      else if (normStr.includes(normTarget) || normTarget.includes(normStr)) score = 50 - Math.abs(normStr.length - normTarget.length);
+      if (score > bestScore){ bestScore = score; best = it; }
+    }
+
+    if (best && bestScore >= 50){
+      const basisX = field.anchor.side === "left" ? best.x + best.w : best.x;
+      const basisY = best.y;
+      const [dx1, dy1, dx2, dy2] = field.anchor.offset;
+      return {
+        rect: [basisX + dx1, basisY + dy1, basisX + dx2, basisY + dy2],
+        page: p,
+        confidence: bestScore === 100 ? "anchor" : "anchor-fuzzy"
+      };
+    }
+  }
+  return { rect: fallback.rect, page: fallback.page, confidence: "anchor-not-found" };
+}
 
 /* ---------------- number parsing ---------------- */
 const NUM_RE = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\$?\s?\d+(?:\.\d+)?\)?/g;
@@ -2260,23 +2471,14 @@ function wire(){
     
     for (let p = 1; p <= doc.pdf.numPages; p++) {
       const pageObj = await doc.pdf.getPage(p);
-      const tc = await pageObj.getTextContent();
-      let validItems = tc.items.filter(it => it.str && it.str.trim()).map(it => ({
-        str: it.str.trim(),
-        x: it.transform[4],
-        y: it.transform[5],
-        w: it.width || 40,
-        h: it.height || Math.abs(it.transform[3]) || 10
-      }));
-      
-      if (!validItems.length) {
-        try {
-          validItems = await ocrPageItems(pageObj);
-        } catch(e) { console.error("OCR page fallback failed", e); }
-      }
-      
+      // Falls back to a cached whole-page OCR pass when this page has no
+      // text layer, so Table Match also works on scanned schedules of
+      // values; the same cached items are reused below for column values
+      // so a scanned page only gets OCR'd once, not once per row/column.
+      const { items: validItems } = await getCachedPageItems(doc, pageObj, p);
+
       if (!validItems.length) continue;
-      
+
       // Group page items into visual rows
       const visualRows = groupRows(validItems).map(rowItems => {
         const rowText = rowItems.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
@@ -2284,17 +2486,17 @@ function wire(){
         const maxH = Math.max(...rowItems.map(i => i.h), 10);
         return { text: rowText, items: rowItems, y: avgY, h: maxH };
       });
-      
+
       for (const req of keysToFind) {
         const normReq = norm(req.key);
         if (!normReq) continue;
-        
+
         // Find matching row
         const matchedRow = visualRows.find(vRow => {
           const normRowText = norm(vRow.text);
           return normRowText.includes(normReq);
         });
-        
+
         if (matchedRow) {
           // Avoid duplicate matches for the same key on the same page
           if (!matchResults.some(r => r.key === req.key && r.page === p)) {
@@ -2313,7 +2515,7 @@ function wire(){
     
     if (matchResults.length === 0) {
       const sampleKeys = [...new Set(keysToFind.map(k => k.key))].slice(0, 3).join(", ");
-      status(`No matches found for keys (${sampleKeys}) in ${docName}. Check if PDF has text layer.`, "err");
+      status(`No matches found for keys (${sampleKeys}) in ${docName}. If this is a scanned document, turn on OCR fallback and try again.`, "err");
       return;
     }
     
@@ -2337,7 +2539,7 @@ function wire(){
         
         let extracted = "";
         try {
-          const items = await extractItems(dynRect, match.pageObj);
+          const items = await extractItemsAny(dynRect, doc, match.pageObj, match.page);
           if (items.length > 0) {
             const rowsGrouped = groupRows(items);
             extracted = rowsGrouped.map(r => r.map(i => i.str).join(" ")).join("\n").trim();
@@ -2464,80 +2666,98 @@ function wire(){
           
           // Extract data
           const rows = [];
+          const rowsMeta = []; // parallel to rows: [{page, confidence}, ...] per field column
           for (const docName of docNames) {
             const doc = S.docs.get(docName);
             const rowVals = [docName];
+            const rowMeta = [];
             for (const field of template) {
               let extracted = "";
+              let matchedPage = field.page || 1;
+              let confidence = "position";
               try {
-                // we only support single page template extraction right now (page 1 usually)
-                const pageObj = await doc.pdf.getPage(field.page || 1);
-                
-                // Fix for old BUILT_IN_TEMPLATES which used [x, y, w, h]
-                let useRect = [...field.rect];
-                if (useRect[2] < useRect[0] || (useRect[2] - useRect[0] < 5 && useRect[2] > 0) || (useRect.length===4 && useRect[2] <= 400 && useRect[0] >= 50)) {
-                  // likely [x, y, w, h] where x2 would normally be larger than x1. 
-                  // Actually, just reliably check: if the template was built-in, they were [x, y, w, h].
-                  // Wait, let's just convert any [x, y, w, h] assuming top-down Y.
-                  // Since all user templates were generated via toPdfRect, they have x2 > x1 and y2 > y1 and they are absolute PDF points.
-                  // For built-ins, w is usually < 200, x is usually > 50.
-                  // Let's just normalize if it looks like [x, y, w, h]:
-                  if (useRect[2] < 300 && useRect[3] < 100) { 
-                     // Definitely [w, h]
-                     const [x, y, w, h] = useRect;
-                     // Convert top-down (x, y, w, h) to bottom-up (x1, y1, x2, y2)
-                     // assuming page height ~ 792 for built-in templates
-                     const ph = pageObj.view[3] || 792;
-                     useRect = [x, ph - y - h, x + w, ph - y];
+                // Re-find the field by its anchor label instead of trusting the
+                // absolute box it was drawn at, so drift/extra pages don't break it.
+                const resolved = await resolveFieldRect(doc, field);
+                matchedPage = resolved.page;
+                confidence = resolved.confidence;
+                const pageObj = await doc.pdf.getPage(matchedPage);
+
+                let useRect = [...resolved.rect];
+                if (confidence === "position" || confidence === "anchor-not-found") {
+                  // Fix for old BUILT_IN_TEMPLATES which used [x, y, w, h]
+                  if (useRect[2] < useRect[0] || (useRect[2] - useRect[0] < 5 && useRect[2] > 0) || (useRect.length===4 && useRect[2] <= 400 && useRect[0] >= 50)) {
+                    // likely [x, y, w, h] where x2 would normally be larger than x1.
+                    // Actually, just reliably check: if the template was built-in, they were [x, y, w, h].
+                    // Wait, let's just convert any [x, y, w, h] assuming top-down Y.
+                    // Since all user templates were generated via toPdfRect, they have x2 > x1 and y2 > y1 and they are absolute PDF points.
+                    // For built-ins, w is usually < 200, x is usually > 50.
+                    // Let's just normalize if it looks like [x, y, w, h]:
+                    if (useRect[2] < 300 && useRect[3] < 100) {
+                       // Definitely [w, h]
+                       const [x, y, w, h] = useRect;
+                       // Convert top-down (x, y, w, h) to bottom-up (x1, y1, x2, y2)
+                       // assuming page height ~ 792 for built-in templates
+                       const ph = pageObj.view[3] || 792;
+                       useRect = [x, ph - y - h, x + w, ph - y];
+                    }
                   }
                 }
-                
+
                 let raw = "";
-                const items = await extractItems(useRect, pageObj);
+                // Falls back to a cached whole-page OCR pass when this page
+                // has no text layer (one OCR pass per page, reused across
+                // every field/document instead of one Tesseract call each).
+                const items = await extractItemsAny(useRect, doc, pageObj, matchedPage);
                 if (items.length > 0) {
                   const rowsGrouped = groupRows(items);
                   raw = rowsGrouped.map(row => row.map(i => i.str).join(" ")).join("\n").trim();
-                } else if ($("chkOCR") && $("chkOCR").checked) {
-                  // OCR fallback
-                  const vp = pageObj.getViewport({ scale: S.scale || 1.0 });
-                  const a = vp.convertToViewportPoint(useRect[0], useRect[1]);
-                  const b = vp.convertToViewportPoint(useRect[2], useRect[3]);
-                  const vRect = { x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1]) };
-                  raw = await ocrRect(vRect, pageObj);
                 }
-                
+
                 extracted = raw ? (coerce(raw) ?? raw) : "";
-                
+                if (extracted === "" && confidence === "anchor-not-found") confidence = "anchor-not-found-empty";
+
                 // Register snip for cross-referencing
                 const snipKey = `${safeSheetName}!${getColLetter(rowVals.length)}${rows.length + 2}`;
                 S.registry.set(snipKey, {
                   key: snipKey, sheet: safeSheetName, addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
-                  mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: useRect, raw: raw, ts: new Date().toISOString()
+                  mode: "text", value: extracted, doc: docName, page: matchedPage, rect: useRect, raw: raw, ts: new Date().toISOString()
                 });
-                
-              } catch(e) { console.error("Extraction error", e); extracted = "ERROR"; }
+
+              } catch(e) { console.error("Extraction error", e); extracted = "ERROR"; confidence = "error"; }
               rowVals.push(extracted);
+              rowMeta.push({ page: matchedPage, confidence });
             }
             rows.push(rowVals);
+            rowsMeta.push(rowMeta);
           }
-          
+
           if (rows.length) {
             ws.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
             ws.getUsedRange().format.autofitColumns();
           }
-          
-          // Add comments for cross-reference
+
+          // Add comments for cross-reference, flagging fields whose anchor
+          // couldn't be found on this document (extraction fell back to the
+          // template's original position and should be spot-checked).
           if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
             for (let r = 0; r < rows.length; r++) {
               for (let c = 1; c < headers.length; c++) {
                 const cell = ws.getRangeByIndexes(r + 1, c, 1, 1);
                 const docName = rows[r][0];
                 const field = template[c - 1];
-                ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${field.page||1}`);
+                const meta = rowsMeta[r][c - 1];
+                const flagged = meta.confidence === "anchor-not-found" || meta.confidence === "anchor-not-found-empty" || meta.confidence === "error";
+                const anchorNote = field.anchor ? `\nAnchor: "${field.anchor.text}"${flagged ? " (NOT FOUND on this doc — verify)" : ""}` : "";
+                ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${meta.page}${anchorNote}`);
+                if (flagged) {
+                  cell.format.font.color = "#B45309";
+                  cell.format.fill.color = "#FEF3C7";
+                }
               }
             }
           }
-          
+
           ws.activate();
         }
         await ctx.sync();
@@ -2589,19 +2809,37 @@ function wire(){
   });
   
   // ---- Field Name Modal callbacks ----
-  function addFieldFromModal() {
+  async function addFieldFromModal() {
     let fieldName = $("fieldNameInput").value;
     $("fieldNameModal").style.display = "none";
-    
+
     if (!fieldName.trim()) {
       fieldName = `Column ${S.currentTemplate.length + 1}`;
     }
     const pdfRect = S._pendingFieldRect;
     const page = S._pendingFieldPage;
-    
-    S.currentTemplate.push({ fieldName, rect: pdfRect, page });
+
+    // Anchor this field to its nearby label so the template can re-find it
+    // on other documents even if their layout has shifted slightly.
+    let anchor = null;
+    try {
+      const curDoc = S.docs.get(S.cur);
+      // Falls back to a whole-page OCR pass when the source has no text
+      // layer (a scanned invoice/pay app) and OCR fallback is enabled.
+      const items = await getPageAnchorItems(curDoc, S.pageObj, S.page);
+      const found = findAnchorForRect(items, pdfRect);
+      if (found) {
+        anchor = {
+          text: found.text,
+          side: found.side,
+          offset: [pdfRect[0]-found.basisX, pdfRect[1]-found.basisY, pdfRect[2]-found.basisX, pdfRect[3]-found.basisY]
+        };
+      }
+    } catch(e) { console.error("Anchor detection failed", e); }
+
+    S.currentTemplate.push({ fieldName, rect: pdfRect, page, anchor });
     $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
-    status(`Added field "${fieldName}" to current template.`, "ok");
+    status(anchor ? `Added field "${fieldName}" (anchored to "${anchor.text}").` : `Added field "${fieldName}" to current template (no nearby label found — will use fixed position).`, "ok");
     
     // Draw a visual indicator on the canvas
     const ov = document.createElement("div");
