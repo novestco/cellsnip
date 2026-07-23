@@ -770,18 +770,26 @@ async function renderPage(){
 
   S.pageObj = await pdf.getPage(S.page);
   if (S.fitWidth){
-    const avail = $("viewerWrap").clientWidth - 24;
+    const avail = ($("viewerWrap").clientWidth || 300) - 24;
     const base = S.pageObj.getViewport({scale: 1});
-    S.scale = Math.max(0.4, avail / base.width);
+    const computedScale = (base && base.width > 0) ? (avail / base.width) : 1.0;
+    S.scale = Math.max(0.4, Math.min(3.0, computedScale || 1.0));
   }
   S.viewport = S.pageObj.getViewport({scale: S.scale});
 
   const canvas = $("pdfCanvas");
   const dpr = window.devicePixelRatio || 1;
-  canvas.width  = Math.floor(S.viewport.width * dpr);
-  canvas.height = Math.floor(S.viewport.height * dpr);
+  canvas.width  = Math.max(1, Math.floor(S.viewport.width * dpr));
+  canvas.height = Math.max(1, Math.floor(S.viewport.height * dpr));
   canvas.style.width  = S.viewport.width + "px";
   canvas.style.height = S.viewport.height + "px";
+  
+  const overlay = $("overlay");
+  if (overlay) {
+    overlay.style.width = S.viewport.width + "px";
+    overlay.style.height = S.viewport.height + "px";
+  }
+
   const ctx = canvas.getContext("2d");
   if (renderTask) { try{renderTask.cancel();}catch(_){} }
   renderTask = S.pageObj.render({canvasContext: ctx, viewport: S.viewport,
@@ -809,7 +817,9 @@ async function renderPage(){
       $("overlay").appendChild(hl);
     }
   }
-  renderThumbnails();
+  
+  // Render thumbnails in background
+  setTimeout(() => renderThumbnails().catch(e => console.error("Thumbnails error:", e)), 50);
 }
 
 async function renderThumbnails() {
