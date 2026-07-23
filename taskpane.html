@@ -2176,30 +2176,39 @@ function wire(){
     let selectionData;
     await Excel.run(async ctx => {
       const rng = ctx.workbook.getSelectedRange();
-      rng.load(["values", "rowIndex", "columnIndex", "worksheet/name", "rowCount"]);
+      rng.load(["values", "text", "rowIndex", "columnIndex", "worksheet/name", "rowCount", "columnCount"]);
       await ctx.sync();
       selectionData = {
         values: rng.values,
+        text: rng.text,
         rowIndex: rng.rowIndex,
         colIndex: rng.columnIndex,
         sheet: rng.worksheet.name,
-        rowCount: rng.rowCount
+        rowCount: rng.rowCount,
+        colCount: rng.columnCount
       };
     });
     
     if (!selectionData || !selectionData.values.length) throw new Error("No Excel selection");
     
-    // Build a map of keys to Excel rows
+    // Build a map of keys to Excel rows (check both values and text across selected columns)
     const keysToFind = [];
     for (let i = 0; i < selectionData.rowCount; i++) {
-      let k = String(selectionData.values[i][0] || "").trim();
-      if (k) keysToFind.push({ key: k, rowOffset: i });
+      for (let j = 0; j < selectionData.colCount; j++) {
+        let valStr = String(selectionData.values[i][j] ?? "").trim();
+        let textStr = String(selectionData.text ? selectionData.text[i][j] : "").trim();
+        if (valStr) keysToFind.push({ key: valStr, rowOffset: i, colOffset: j });
+        if (textStr && textStr !== valStr) keysToFind.push({ key: textStr, rowOffset: i, colOffset: j });
+      }
     }
     
     if (keysToFind.length === 0) {
       status("No keys found in Excel selection.", "err");
       return;
     }
+    
+    // Helper to normalize strings (remove spaces, hyphens, en-dashes, em-dashes)
+    const norm = str => String(str).toLowerCase().replace(/[\s\xA0\u2013\u2014\-]+/g, "");
     
     // 2. Pre-scan PDF pages to find where these keys exist
     const matchResults = []; // { key, rowOffset, page, matchedY, matchedH }
@@ -2226,12 +2235,12 @@ function wire(){
       });
       
       for (const req of keysToFind) {
-        const normReq = req.key.toLowerCase().replace(/[\s\xA0]+/g, "");
+        const normReq = norm(req.key);
         if (!normReq) continue;
         
         // Find matching row
         const matchedRow = visualRows.find(vRow => {
-          const normRowText = vRow.text.toLowerCase().replace(/[\s\xA0]+/g, "");
+          const normRowText = norm(vRow.text);
           return normRowText.includes(normReq);
         });
         
@@ -2252,7 +2261,8 @@ function wire(){
     }
     
     if (matchResults.length === 0) {
-      status("No matches found for the selected keys in the PDF.", "err");
+      const sampleKeys = [...new Set(keysToFind.map(k => k.key))].slice(0, 3).join(", ");
+      status(`No matches found for keys (${sampleKeys}) in ${docName}. Check if PDF has text layer.`, "err");
       return;
     }
     
