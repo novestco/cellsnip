@@ -412,33 +412,34 @@ async function loadDocsFromWorkbook() {
 /* ---------------- document loading ---------------- */
 async function addDoc(name, bytes, persist=true, folder=""){
   try{
-    const uint8 = new Uint8Array(bytes);
+    const uint8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
     const pdf = await pdfjsLib.getDocument({data: uint8}).promise;
     S.docs.set(name, {bytes: uint8.buffer, pdf, folder});
     if (persist) {
       saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
-      await switchDoc(name); // Always switch viewer to the newly uploaded document!
+      await switchDoc(name);
     } else if (!S.cur) {
       await switchDoc(name);
     }
     refreshDocSelect();
-    status(`Loaded ${name} (${pdf.numPages} pages) — detecting template...`, "ok");
+    status(`Loaded ${name} (${pdf.numPages} pages)`, "ok");
     
-    // Auto-detect and assign template
-    try {
-      const best = await autoDetectTemplate(name);
-      if (best) {
-        S.docs.get(name).assignedTemplate = best;
-        status(`${name}: auto-assigned "${best}"`, "ok");
-      } else {
-        S.docs.get(name).assignedTemplate = "";
-        status(`Loaded ${name} (${pdf.numPages} pages) — no template match`, "ok");
-      }
-      refreshDocSelect();
-    } catch(e) {
-      console.error("Auto-detect on upload failed", e);
-    }
-  }catch(e){ status(`Could not open ${name}: ${e.message}`, "err"); }
+    // Auto-detect template in background without blocking UI
+    setTimeout(async () => {
+      try {
+        const best = await autoDetectTemplate(name);
+        if (best) {
+          const d = S.docs.get(name);
+          if (d) d.assignedTemplate = best;
+          status(`${name}: auto-assigned "${best}"`, "ok");
+          refreshDocSelect();
+        }
+      } catch(e) { console.error("Auto-detect failed:", e); }
+    }, 100);
+  }catch(e){ 
+    console.error("addDoc error:", e);
+    status(`Could not open ${name}: ${e.message}`, "err"); 
+  }
 }
 
 function refreshDocSelect(){
@@ -753,7 +754,12 @@ async function switchDoc(name, page=1){
   if (!S.docs.has(name)) return;
   S.cur = name; S.page = page;
   refreshDocSelect();
-  await renderPage();
+  try {
+    await renderPage();
+  } catch(e) {
+    console.error("switchDoc error:", e);
+    status(`Error displaying ${name}: ${e.message}`, "err");
+  }
 }
 
 /* ---------------- rendering ---------------- */
