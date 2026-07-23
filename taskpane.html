@@ -409,8 +409,9 @@ async function loadDocsFromWorkbook() {
 /* ---------------- document loading ---------------- */
 async function addDoc(name, bytes, persist=true, folder=""){
   try{
-    const pdf = await pdfjsLib.getDocument({data: bytes.slice(0)}).promise;
-    S.docs.set(name, {bytes, pdf, folder});
+    const uint8 = new Uint8Array(bytes);
+    const pdf = await pdfjsLib.getDocument({data: uint8.slice()}).promise;
+    S.docs.set(name, {bytes: uint8.buffer, pdf, folder});
     if (persist) {
       saveAllDocsToWorkbook().catch(e => console.error("Save to workbook failed:", e));
     }
@@ -2059,7 +2060,21 @@ function wire(){
     }
   };
 
-  $("btnOpen").onclick = ()=> $("fileInput").click();
+  $("btnOpen").onclick = () => $("fileInput").click();
+  
+  // Global Drag & Drop support for dropping PDF files directly into CellSnip
+  window.addEventListener("dragover", e => e.preventDefault());
+  window.addEventListener("drop", async e => {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      e.preventDefault();
+      for (const f of e.dataTransfer.files) {
+        if (f.name.toLowerCase().endsWith(".pdf")) {
+          const bytes = await f.arrayBuffer();
+          await addDoc(f.name, bytes);
+        }
+      }
+    }
+  });
   
   $("btnBulkRoll").onclick = () => $("bulkRollInput").click();
   $("bulkRollInput").onchange = (e) => {
