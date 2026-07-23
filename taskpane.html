@@ -2898,13 +2898,13 @@ function wire(){
       if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
     };
   }
-  $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
-  $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
-  $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
-  $("pageNum").onchange = e=>{ S.page = parseInt(e.target.value)||1; renderPage(); };
-  $("btnZoomIn").onclick  = ()=>{ S.fitWidth=false; S.scale*=1.2; renderPage(); };
-  $("btnZoomOut").onclick = ()=>{ S.fitWidth=false; S.scale/=1.2; renderPage(); };
-  $("btnFit").onclick     = ()=>{ S.fitWidth=true; renderPage(); };
+  if ($("docSelect")) $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
+  if ($("btnPrev")) $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
+  if ($("btnNext")) $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
+  if ($("pageNum")) $("pageNum").onchange = e=>{ S.page = parseInt(e.target.value)||1; renderPage(); };
+  if ($("btnZoomIn")) $("btnZoomIn").onclick  = ()=>{ S.fitWidth=false; S.scale*=1.2; renderPage(); };
+  if ($("btnZoomOut")) $("btnZoomOut").onclick = ()=>{ S.fitWidth=false; S.scale/=1.2; renderPage(); };
+  if ($("btnFit")) $("btnFit").onclick     = ()=>{ S.fitWidth=true; renderPage(); };
   document.querySelectorAll(".mode").forEach(b=>{
     b.onclick = ()=>{
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
