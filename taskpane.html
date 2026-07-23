@@ -2071,16 +2071,19 @@ async function exportOverview(){
 
 /* ---------------- UI wiring + init ---------------- */
 function wire(){
-  $("btnAddFolder").onclick = () => {
-    const f = prompt("New folder name:");
-    if (f && f.trim()) {
-      S.folders.add(f.trim());
-      saveAllDocsToWorkbook();
-      refreshDocSelect();
-    }
-  };
+  if ($("btnAddFolder")) {
+    $("btnAddFolder").onclick = () => {
+      const f = prompt("New folder name:");
+      if (f && f.trim()) {
+        S.folders.add(f.trim());
+        saveAllDocsToWorkbook();
+        refreshDocSelect();
+      }
+    };
+  }
   
-  $("btnSaveSnipEdit").onclick = async () => {
+  if ($("btnSaveSnipEdit")) {
+    $("btnSaveSnipEdit").onclick = async () => {
     const c = S.selectedCell; if (!c) return;
     const key = `${c.sheet}!${c.addr}`;
     const rec = S.registry.get(key); if (!rec) return;
