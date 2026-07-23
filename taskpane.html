@@ -3060,7 +3060,8 @@ function wire(){
     selPeriod.appendChild(opt);
   }
   selPeriod.onchange = e => { S.period = e.target.value; };
-  $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
+  if ($("btnCloseDashboard")) $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
+}
 }
 
 async function buildDashboard() {
