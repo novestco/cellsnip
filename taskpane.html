@@ -967,6 +967,118 @@ function groupRows(items){
 }
 const median = a => { if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
 
+/* ---------------- anchor-based template fields ----------------
+   A template field is drawn once as an absolute box, but that box only
+   works on the exact document it was drawn on. Documents from the same
+   vendor/form almost never line up pixel-for-pixel (extra line, different
+   font width, rescanned at a different DPI), so instead of trusting the
+   raw coordinates we anchor each field to its nearby label and re-find
+   that label on every document, recomputing the box from wherever the
+   label actually landed. */
+function normalizeAnchorText(s){
+  return String(s || "").toLowerCase().replace(/[\s\xA0]+/g, " ").trim();
+}
+
+function mapTextItems(tc){
+  return tc.items.filter(it => it.str && it.str.trim()).map(it => ({
+    str: it.str,
+    x: it.transform[4],
+    y: it.transform[5],
+    w: it.width || 0,
+    h: it.height || Math.abs(it.transform[3]) || 8
+  }));
+}
+
+/* Find the nearest label to a drawn field box: a same-row item ending at/
+   before the box's left edge (typical "Label: ____" form), or an item
+   directly above (typical table column header). */
+function findAnchorForRect(items, rect){
+  const [x1, y1, x2, y2] = rect;
+  const boxH = Math.max(y2 - y1, 1);
+  const boxW = Math.max(x2 - x1, 1);
+
+  let bestLeft = null, bestLeftDist = Infinity;
+  let bestTop = null, bestTopDist = Infinity;
+
+  for (const it of items){
+    const iy1 = it.y, iy2 = it.y + it.h;
+    const ix2 = it.x + it.w;
+
+    // same row, ends at/before the box's left edge
+    const vOverlap = Math.min(iy2, y2) - Math.max(iy1, y1);
+    if (ix2 <= x1 + 3 && vOverlap > -boxH * 0.5){
+      const dist = x1 - ix2;
+      if (dist > -5 && dist < bestLeftDist){ bestLeftDist = dist; bestLeft = it; }
+    }
+
+    // directly above (PDF y-axis points up), overlapping horizontally
+    const hOverlap = Math.min(ix2, x2) - Math.max(it.x, x1);
+    if (it.y >= y2 - 3 && hOverlap > -boxW * 0.3){
+      const dist = it.y - y2;
+      if (dist > -5 && dist < bestTopDist){ bestTopDist = dist; bestTop = it; }
+    }
+  }
+
+  if (bestLeft && bestLeftDist < 160){
+    return { text: bestLeft.str.trim(), side: "left", basisX: bestLeft.x + bestLeft.w, basisY: bestLeft.y };
+  }
+  if (bestTop && bestTopDist < 60){
+    return { text: bestTop.str.trim(), side: "top", basisX: bestTop.x, basisY: bestTop.y };
+  }
+  return null;
+}
+
+/* Re-locate a template field on a document by searching for its anchor text
+   (checking the recorded page first, then every other page, so a form that
+   gained/lost a cover page doesn't break the field) instead of trusting the
+   absolute coordinates it was drawn at. Falls back to the original rect/page
+   if no anchor is recorded (legacy templates) or the anchor text can't be
+   found on this document at all. */
+async function resolveFieldRect(doc, field){
+  const fallback = { rect: field.rect, page: field.page || 1, confidence: "position" };
+  if (!field.anchor || !field.anchor.text) return fallback;
+
+  const normTarget = normalizeAnchorText(field.anchor.text);
+  if (!normTarget) return fallback;
+
+  const preferredPage = field.page || 1;
+  const pages = [preferredPage];
+  for (let p = 1; p <= doc.pdf.numPages; p++) if (p !== preferredPage) pages.push(p);
+
+  for (const p of pages){
+    let tc;
+    try {
+      const pageObj = await doc.pdf.getPage(p);
+      tc = await pageObj.getTextContent();
+    } catch(e) { continue; }
+
+    let best = null, bestScore = -1;
+    for (const it of tc.items){
+      if (!it.str || !it.str.trim()) continue;
+      const normStr = normalizeAnchorText(it.str);
+      if (!normStr) continue;
+      let score = -1;
+      if (normStr === normTarget) score = 100;
+      else if (normStr.includes(normTarget) || normTarget.includes(normStr)) score = 50 - Math.abs(normStr.length - normTarget.length);
+      if (score > bestScore){ bestScore = score; best = it; }
+    }
+
+    if (best && bestScore >= 50){
+      const x = best.transform[4], y = best.transform[5];
+      const w = best.width || 0;
+      const basisX = field.anchor.side === "left" ? x + w : x;
+      const basisY = y;
+      const [dx1, dy1, dx2, dy2] = field.anchor.offset;
+      return {
+        rect: [basisX + dx1, basisY + dy1, basisX + dx2, basisY + dy2],
+        page: p,
+        confidence: bestScore === 100 ? "anchor" : "anchor-fuzzy"
+      };
+    }
+  }
+  return { rect: fallback.rect, page: fallback.page, confidence: "anchor-not-found" };
+}
+
 /* ---------------- number parsing ---------------- */
 const NUM_RE = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\$?\s?\d+(?:\.\d+)?\)?/g;
 function parseNumbers(text){
@@ -2371,34 +2483,44 @@ function wire(){
           
           // Extract data
           const rows = [];
+          const rowsMeta = []; // parallel to rows: [{page, confidence}, ...] per field column
           for (const docName of docNames) {
             const doc = S.docs.get(docName);
             const rowVals = [docName];
+            const rowMeta = [];
             for (const field of template) {
               let extracted = "";
+              let matchedPage = field.page || 1;
+              let confidence = "position";
               try {
-                // we only support single page template extraction right now (page 1 usually)
-                const pageObj = await doc.pdf.getPage(field.page || 1);
-                
-                // Fix for old BUILT_IN_TEMPLATES which used [x, y, w, h]
-                let useRect = [...field.rect];
-                if (useRect[2] < useRect[0] || (useRect[2] - useRect[0] < 5 && useRect[2] > 0) || (useRect.length===4 && useRect[2] <= 400 && useRect[0] >= 50)) {
-                  // likely [x, y, w, h] where x2 would normally be larger than x1. 
-                  // Actually, just reliably check: if the template was built-in, they were [x, y, w, h].
-                  // Wait, let's just convert any [x, y, w, h] assuming top-down Y.
-                  // Since all user templates were generated via toPdfRect, they have x2 > x1 and y2 > y1 and they are absolute PDF points.
-                  // For built-ins, w is usually < 200, x is usually > 50.
-                  // Let's just normalize if it looks like [x, y, w, h]:
-                  if (useRect[2] < 300 && useRect[3] < 100) { 
-                     // Definitely [w, h]
-                     const [x, y, w, h] = useRect;
-                     // Convert top-down (x, y, w, h) to bottom-up (x1, y1, x2, y2)
-                     // assuming page height ~ 792 for built-in templates
-                     const ph = pageObj.view[3] || 792;
-                     useRect = [x, ph - y - h, x + w, ph - y];
+                // Re-find the field by its anchor label instead of trusting the
+                // absolute box it was drawn at, so drift/extra pages don't break it.
+                const resolved = await resolveFieldRect(doc, field);
+                matchedPage = resolved.page;
+                confidence = resolved.confidence;
+                const pageObj = await doc.pdf.getPage(matchedPage);
+
+                let useRect = [...resolved.rect];
+                if (confidence === "position" || confidence === "anchor-not-found") {
+                  // Fix for old BUILT_IN_TEMPLATES which used [x, y, w, h]
+                  if (useRect[2] < useRect[0] || (useRect[2] - useRect[0] < 5 && useRect[2] > 0) || (useRect.length===4 && useRect[2] <= 400 && useRect[0] >= 50)) {
+                    // likely [x, y, w, h] where x2 would normally be larger than x1.
+                    // Actually, just reliably check: if the template was built-in, they were [x, y, w, h].
+                    // Wait, let's just convert any [x, y, w, h] assuming top-down Y.
+                    // Since all user templates were generated via toPdfRect, they have x2 > x1 and y2 > y1 and they are absolute PDF points.
+                    // For built-ins, w is usually < 200, x is usually > 50.
+                    // Let's just normalize if it looks like [x, y, w, h]:
+                    if (useRect[2] < 300 && useRect[3] < 100) {
+                       // Definitely [w, h]
+                       const [x, y, w, h] = useRect;
+                       // Convert top-down (x, y, w, h) to bottom-up (x1, y1, x2, y2)
+                       // assuming page height ~ 792 for built-in templates
+                       const ph = pageObj.view[3] || 792;
+                       useRect = [x, ph - y - h, x + w, ph - y];
+                    }
                   }
                 }
-                
+
                 let raw = "";
                 const items = await extractItems(useRect, pageObj);
                 if (items.length > 0) {
@@ -2412,39 +2534,51 @@ function wire(){
                   const vRect = { x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1]) };
                   raw = await ocrRect(vRect, pageObj);
                 }
-                
+
                 extracted = raw ? (coerce(raw) ?? raw) : "";
-                
+                if (extracted === "" && confidence === "anchor-not-found") confidence = "anchor-not-found-empty";
+
                 // Register snip for cross-referencing
                 const snipKey = `${safeSheetName}!${getColLetter(rowVals.length)}${rows.length + 2}`;
                 S.registry.set(snipKey, {
                   key: snipKey, sheet: safeSheetName, addr: `${getColLetter(rowVals.length)}${rows.length + 2}`,
-                  mode: "text", value: extracted, doc: docName, page: field.page || 1, rect: useRect, raw: raw, ts: new Date().toISOString()
+                  mode: "text", value: extracted, doc: docName, page: matchedPage, rect: useRect, raw: raw, ts: new Date().toISOString()
                 });
-                
-              } catch(e) { console.error("Extraction error", e); extracted = "ERROR"; }
+
+              } catch(e) { console.error("Extraction error", e); extracted = "ERROR"; confidence = "error"; }
               rowVals.push(extracted);
+              rowMeta.push({ page: matchedPage, confidence });
             }
             rows.push(rowVals);
+            rowsMeta.push(rowMeta);
           }
-          
+
           if (rows.length) {
             ws.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
             ws.getUsedRange().format.autofitColumns();
           }
-          
-          // Add comments for cross-reference
+
+          // Add comments for cross-reference, flagging fields whose anchor
+          // couldn't be found on this document (extraction fell back to the
+          // template's original position and should be spot-checked).
           if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
             for (let r = 0; r < rows.length; r++) {
               for (let c = 1; c < headers.length; c++) {
                 const cell = ws.getRangeByIndexes(r + 1, c, 1, 1);
                 const docName = rows[r][0];
                 const field = template[c - 1];
-                ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${field.page||1}`);
+                const meta = rowsMeta[r][c - 1];
+                const flagged = meta.confidence === "anchor-not-found" || meta.confidence === "anchor-not-found-empty" || meta.confidence === "error";
+                const anchorNote = field.anchor ? `\nAnchor: "${field.anchor.text}"${flagged ? " (NOT FOUND on this doc — verify)" : ""}` : "";
+                ws.comments.add(cell, `[CellSnip TEMPLATE]\nSource: ${docName}, p.${meta.page}${anchorNote}`);
+                if (flagged) {
+                  cell.format.font.color = "#B45309";
+                  cell.format.fill.color = "#FEF3C7";
+                }
               }
             }
           }
-          
+
           ws.activate();
         }
         await ctx.sync();
@@ -2496,19 +2630,35 @@ function wire(){
   });
   
   // ---- Field Name Modal callbacks ----
-  function addFieldFromModal() {
+  async function addFieldFromModal() {
     let fieldName = $("fieldNameInput").value;
     $("fieldNameModal").style.display = "none";
-    
+
     if (!fieldName.trim()) {
       fieldName = `Column ${S.currentTemplate.length + 1}`;
     }
     const pdfRect = S._pendingFieldRect;
     const page = S._pendingFieldPage;
-    
-    S.currentTemplate.push({ fieldName, rect: pdfRect, page });
+
+    // Anchor this field to its nearby label so the template can re-find it
+    // on other documents even if their layout has shifted slightly.
+    let anchor = null;
+    try {
+      const tc = await S.pageObj.getTextContent();
+      const items = mapTextItems(tc);
+      const found = findAnchorForRect(items, pdfRect);
+      if (found) {
+        anchor = {
+          text: found.text,
+          side: found.side,
+          offset: [pdfRect[0]-found.basisX, pdfRect[1]-found.basisY, pdfRect[2]-found.basisX, pdfRect[3]-found.basisY]
+        };
+      }
+    } catch(e) { console.error("Anchor detection failed", e); }
+
+    S.currentTemplate.push({ fieldName, rect: pdfRect, page, anchor });
     $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
-    status(`Added field "${fieldName}" to current template.`, "ok");
+    status(anchor ? `Added field "${fieldName}" (anchored to "${anchor.text}").` : `Added field "${fieldName}" to current template (no nearby label found — will use fixed position).`, "ok");
     
     // Draw a visual indicator on the canvas
     const ov = document.createElement("div");
