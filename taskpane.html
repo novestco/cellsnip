@@ -959,11 +959,25 @@ async function ocrPageItems(pageObj) {
   await pageObj.render({ canvasContext: ctx, viewport: vp }).promise;
   
   const res = await S.ocrWorker.recognize(c);
-  const words = (res.data && res.data.words) ? res.data.words : [];
+  const rawWords = [];
+  if (res.data) {
+    if (res.data.lines && res.data.lines.length) {
+      for (const l of res.data.lines) {
+        if (l.words && l.words.length) {
+          rawWords.push(...l.words);
+        } else if (l.text && l.bbox) {
+          rawWords.push({ text: l.text, bbox: l.bbox });
+        }
+      }
+    } else if (res.data.words && res.data.words.length) {
+      rawWords.push(...res.data.words);
+    }
+  }
   
-  return words.map(w => {
-    const p1 = vp.convertToPdfPoint(w.bbox.x0, w.bbox.y0);
-    const p2 = vp.convertToPdfPoint(w.bbox.x1, w.bbox.y1);
+  return rawWords.map(w => {
+    const bbox = w.bbox || { x0: 0, y0: 0, x1: 100, y1: 20 };
+    const p1 = vp.convertToPdfPoint(bbox.x0, bbox.y0);
+    const p2 = vp.convertToPdfPoint(bbox.x1, bbox.y1);
     return {
       str: w.text ? w.text.trim() : "",
       x: Math.min(p1[0], p2[0]),
@@ -2235,8 +2249,11 @@ function wire(){
       return;
     }
     
-    // Helper to normalize strings (remove spaces, hyphens, en-dashes, em-dashes)
-    const norm = str => String(str).toLowerCase().replace(/[\s\xA0\u2013\u2014\-]+/g, "");
+    // Helper to normalize strings (remove spaces, hyphens, en-dashes, em-dashes, and normalize O/0, I/1 for OCR)
+    const norm = str => String(str).toLowerCase()
+      .replace(/[oO]/g, "0")
+      .replace(/[lI]/g, "1")
+      .replace(/[\s\xA0\u2013\u2014\-]+/g, "");
     
     // 2. Pre-scan PDF pages to find where these keys exist
     const matchResults = []; // { key, rowOffset, page, matchedY, matchedH }
