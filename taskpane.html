@@ -1866,6 +1866,108 @@ function wire(){
     }
   }
 
+  // Auto-build a Table Template by scanning the PDF for known column headers
+  async function autoCreateTableTemplate(docName, columnDefs) {
+    /* columnDefs: [{ headerPatterns: ["pattern1","pattern2"], fieldName: "Column Name" }, ...]
+       First entry is always the Row Key column. */
+    const d = S.docs.get(docName);
+    if (!d || !d.pdf) throw new Error("Document not loaded");
+    
+    const page = await d.pdf.getPage(1);
+    const tc = await page.getTextContent();
+    const items = tc.items.filter(it => it.str && it.str.trim());
+    
+    // Build a flat list of text items with positions
+    const textItems = items.map(it => ({
+      str: it.str.trim(),
+      x: it.transform[4],
+      y: it.transform[5],
+      w: it.width || 50,
+      h: it.height || Math.abs(it.transform[3]) || 10
+    }));
+    
+    // For each column definition, find the header text position
+    const fields = [];
+    for (const col of columnDefs) {
+      let bestItem = null;
+      for (const pattern of col.headerPatterns) {
+        const pat = pattern.toLowerCase();
+        // Try exact match first, then partial
+        for (const it of textItems) {
+          if (it.str.toLowerCase() === pat) { bestItem = it; break; }
+        }
+        if (bestItem) break;
+        for (const it of textItems) {
+          if (it.str.toLowerCase().includes(pat)) { bestItem = it; break; }
+        }
+        if (bestItem) break;
+      }
+      
+      if (!bestItem) {
+        // Try joining adjacent items for multi-word headers
+        for (const pattern of col.headerPatterns) {
+          const pat = pattern.toLowerCase();
+          const fullText = textItems.map(i => i.str).join(" ").toLowerCase();
+          const idx = fullText.indexOf(pat);
+          if (idx >= 0) {
+            // Find the item that overlaps this position
+            let charCount = 0;
+            for (const it of textItems) {
+              charCount += it.str.length + 1;
+              if (charCount > idx) { bestItem = it; break; }
+            }
+          }
+          if (bestItem) break;
+        }
+      }
+      
+      if (bestItem) {
+        // Build a bounding rect for this column (x range of the header, full page height for y)
+        const colWidth = Math.max(bestItem.w, 40);
+        const rect = [
+          bestItem.x - 5,           // x1: left edge with small padding
+          0,                         // y1: bottom of page (will be dynamic during match)
+          bestItem.x + colWidth + 5, // x2: right edge with small padding  
+          999                        // y2: top of page (will be dynamic during match)
+        ];
+        fields.push({ fieldName: col.fieldName, rect, page: 1 });
+      } else {
+        console.warn(`Could not find header for "${col.fieldName}" in ${docName}`);
+      }
+    }
+    
+    return fields;
+  }
+
+  async function createG703Template(docName) {
+    const columnDefs = [
+      { headerPatterns: ["cost", "cost code", "item", "item no", "no."], fieldName: "Row Key" },
+      { headerPatterns: ["this period", "work completed", "completed this period"], fieldName: "Work Completed This Period" },
+      { headerPatterns: ["stored this period", "materials stored", "materials presently stored"], fieldName: "Materials Stored This Period" },
+      { headerPatterns: ["current period", "retainage", "current"], fieldName: "Retainage Current Period" }
+    ];
+    
+    try {
+      const fields = await autoCreateTableTemplate(docName, columnDefs);
+      if (fields.length < 2) throw new Error("Could not detect enough columns");
+      
+      const tplName = "G703 Schedule of Values";
+      S.templates.set(tplName, {
+        category: "User Templates",
+        keywords: ["schedule of values", "application for payment", "continuation sheet", "g703", "g-703"],
+        isTable: true,
+        fields: fields
+      });
+      await saveRegistry();
+      status(`Auto-created template "${tplName}" with ${fields.length} columns.`, "ok");
+      return tplName;
+    } catch(e) {
+      console.error("G703 template creation failed", e);
+      status("Could not auto-detect G703 columns: " + e.message, "err");
+      return null;
+    }
+  }
+
   function buildTemplateSelectHTML(selectedVal) {
     let html = `<select class="docTplSel" style="font-size:10px; padding:2px; max-width:140px;">`;
     html += `<option value="">-- Skip --</option>`;
@@ -1891,17 +1993,30 @@ function wire(){
     return html;
   }
 
-  $("btnTableMatch").onclick = () => {
+  $("btnTableMatch").onclick = async () => {
     if (S.docs.size === 0) {
       status("No documents available.", "err");
       return;
     }
     
     // Filter templates to only table templates
-    const tableTpls = [];
+    let tableTpls = [];
     for (const [name, data] of S.templates.entries()) {
       if (data && data.isTable) tableTpls.push(name);
     }
+    
+    // If no table templates exist, auto-create a G703 template from the current doc
+    if (tableTpls.length === 0 && S.cur) {
+      status("No Table Templates found. Auto-detecting G703 columns...", "ok");
+      const created = await createG703Template(S.cur);
+      if (created) {
+        tableTpls.push(created);
+      } else {
+        status("Auto-detect failed. Use 'Table Template' mode to manually create one.", "err");
+        return;
+      }
+    }
+    
     if (tableTpls.length === 0) {
       status("No Table Templates available. Use 'Table Template' mode to create one.", "err");
       return;
