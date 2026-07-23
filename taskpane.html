@@ -2095,9 +2095,41 @@ async function exportOverview(){
 }
 
 /* ---------------- UI wiring + init ---------------- */
+function bindClick(id, fn) { const el = typeof id === "string" ? $(id) : id; if (el) el.onclick = fn; return el; }
+function bindChange(id, fn) { const el = typeof id === "string" ? $(id) : id; if (el) el.onchange = fn; return el; }
 function wire(){
+  // Wire mode buttons first
+  document.querySelectorAll(".mode").forEach(b=>{
+    b.onclick = ()=>{
+      document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+      S.mode = b.dataset.mode || b.getAttribute("data-mode");
+      updateSelRectColor();
+      const isTemplating = (S.mode === "template" || S.mode === "table_template");
+      if ($("templateOptions")) $("templateOptions").style.display = isTemplating ? "flex" : "none";
+      if (isTemplating) {
+        if (!S.currentTemplate) S.currentTemplate = [];
+        if ($("lblTemplateFields")) $("lblTemplateFields").textContent = `${S.currentTemplate.length} field(s)`;
+        status(S.mode === "template" 
+          ? "Form Template mode: Drag a selection box over any value on the PDF to add a field." 
+          : "Table Template mode: Drag a selection box over table columns on the PDF to define them.", "ok");
+      } else if (S.mode === "table") {
+        status("Table mode active: Drag a selection box around any table on the PDF to extract rows & columns into Excel.", "ok");
+      } else if (S.mode === "text") {
+        status("Text mode active: Drag a box around text on the PDF to snip into the active Excel cell.", "ok");
+      } else if (S.mode === "sum") {
+        status("Sum mode active: Drag a box around numbers to sum them into the active Excel cell.", "ok");
+      } else if (S.mode === "image") {
+        status("Image mode active: Drag a box to capture an image region into Excel.", "ok");
+      } else if (S.mode === "tieout") {
+        status("Tie-out mode active: Drag a box to verify an Excel cell value against the PDF.", "ok");
+      } else if (S.mode === "variance") {
+        status("Variance mode active: Drag a box to record a variance note on an Excel cell.", "ok");
+      }
+    };
+  });
   if ($("btnAddFolder")) {
-    $("btnAddFolder").onclick = () => {
+    if ($("btnAddFolder")) $("btnAddFolder").onclick = () => {
       const f = prompt("New folder name:");
       if (f && f.trim()) {
         S.folders.add(f.trim());
@@ -2108,7 +2140,7 @@ function wire(){
   }
   
   if ($("btnSaveSnipEdit")) {
-    $("btnSaveSnipEdit").onclick = async () => {
+    if ($("btnSaveSnipEdit")) $("btnSaveSnipEdit").onclick = async () => {
     const c = S.selectedCell; if (!c) return;
     const key = `${c.sheet}!${c.addr}`;
     const rec = S.registry.get(key); if (!rec) return;
@@ -2156,8 +2188,8 @@ function wire(){
     }
   });
   
-  $("btnBulkRoll").onclick = () => $("bulkRollInput").click();
-  $("bulkRollInput").onchange = (e) => {
+  if ($("btnBulkRoll")) $("btnBulkRoll").onclick = () => $("bulkRollInput").click();
+  if ($("bulkRollInput")) $("bulkRollInput").onchange = (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
     const existingDocs = Array.from(S.docs.keys());
@@ -2187,8 +2219,8 @@ function wire(){
     e.target.value = "";
   };
   
-  $("btnCancelBulkRoll").onclick = () => $("bulkRollModal").style.display = "none";
-  $("btnRunBulkRoll").onclick = async () => {
+  if ($("btnCancelBulkRoll")) $("btnCancelBulkRoll").onclick = () => $("bulkRollModal").style.display = "none";
+  if ($("btnRunBulkRoll")) $("btnRunBulkRoll").onclick = async () => {
     $("bulkRollModal").style.display = "none";
     const selects = document.querySelectorAll(".bulkRollMapSelect");
     const files = window._bulkRollFiles || [];
@@ -2439,7 +2471,7 @@ function wire(){
     return html;
   }
 
-  $("btnTableMatch").onclick = async () => {
+  if ($("btnTableMatch")) $("btnTableMatch").onclick = async () => {
     if (S.docs.size === 0) {
       status("No documents available.", "err");
       return;
@@ -2489,9 +2521,9 @@ function wire(){
     }
   };
 
-  $("btnCancelTableMatch").onclick = () => $("tableMatchModal").style.display = "none";
+  if ($("btnCancelTableMatch")) $("btnCancelTableMatch").onclick = () => $("tableMatchModal").style.display = "none";
   
-  $("btnRunTableMatch").onclick = async () => {
+  if ($("btnRunTableMatch")) $("btnRunTableMatch").onclick = async () => {
     const docName = $("selTableMatchDoc").value;
     const tplName = $("selTableMatchTpl").value;
     if (!docName || !tplName) return;
@@ -2698,7 +2730,7 @@ function wire(){
     status(`Table Match complete. Matched ${matchedCount} keys in ${matchedDocName}.`, "ok");
   }
 
-  $("btnExtractForms").onclick = async () => {
+  if ($("btnExtractForms")) $("btnExtractForms").onclick = async () => {
     if (S.templates.size === 0) {
       status("No templates available. Use 'Form Template' mode to create one.", "err");
       return;
@@ -2727,8 +2759,8 @@ function wire(){
     list.innerHTML = html;
   };
   
-  $("btnCancelExtractForms").onclick = () => $("formExtractModal").style.display = "none";
-  $("btnRunExtractForms").onclick = async () => {
+  if ($("btnCancelExtractForms")) $("btnCancelExtractForms").onclick = () => $("formExtractModal").style.display = "none";
+  if ($("btnRunExtractForms")) $("btnRunExtractForms").onclick = async () => {
     $("formExtractModal").style.display = "none";
     
     // Gather selections
@@ -2903,9 +2935,9 @@ function wire(){
     }
   }
 
-  if ($("btnOpen")) $("btnOpen").onclick = openFileDialog;
-  if ($("btnEmptyOpen")) $("btnEmptyOpen").onclick = openFileDialog;
-  if ($("btnSidebarOpen")) $("btnSidebarOpen").onclick = openFileDialog;
+  if ($("btnOpen")) if ($("btnOpen")) $("btnOpen").onclick = openFileDialog;
+  if ($("btnEmptyOpen")) if ($("btnEmptyOpen")) $("btnEmptyOpen").onclick = openFileDialog;
+  if ($("btnSidebarOpen")) if ($("btnSidebarOpen")) $("btnSidebarOpen").onclick = openFileDialog;
 
   const handleFileSelect = async (files) => {
     for (const f of files) {
@@ -2919,17 +2951,18 @@ function wire(){
   };
 
   if ($("fileInput")) {
-    $("fileInput").onchange = (e) => {
+    if ($("fileInput")) $("fileInput").onchange = (e) => {
       if (e.target.files && e.target.files.length) handleFileSelect(e.target.files);
     };
   }
-  if ($("docSelect")) $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
-  if ($("btnPrev")) $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
-  if ($("btnNext")) $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
-  if ($("pageNum")) $("pageNum").onchange = e=>{ S.page = parseInt(e.target.value)||1; renderPage(); };
-  if ($("btnZoomIn")) $("btnZoomIn").onclick  = ()=>{ S.fitWidth=false; S.scale*=1.2; renderPage(); };
-  if ($("btnZoomOut")) $("btnZoomOut").onclick = ()=>{ S.fitWidth=false; S.scale/=1.2; renderPage(); };
-  if ($("btnFit")) $("btnFit").onclick     = ()=>{ S.fitWidth=true; renderPage(); };
+  if ($("docSelect")) if ($("docSelect")) $("docSelect").onchange = e=>{ if (e.target.value) switchDoc(e.target.value); };
+  if ($("btnPrev")) if ($("btnPrev")) $("btnPrev").onclick = ()=>{ S.page--; renderPage(); };
+  if ($("btnNext")) if ($("btnNext")) $("btnNext").onclick = ()=>{ S.page++; renderPage(); };
+  if ($("pageNum")) if ($("pageNum")) $("pageNum").onchange = e=>{ S.page = parseInt(e.target.value)||1; renderPage(); };
+  if ($("btnZoomIn")) if ($("btnZoomIn")) $("btnZoomIn").onclick = ()=>{ S.fitWidth=false; S.scale*=1.2; renderPage(); };
+  if ($("btnZoomOut")) if ($("btnZoomOut")) $("btnZoomOut").onclick = ()=>{ S.fitWidth=false; S.scale/=1.2; renderPage(); };
+  if ($("btnFit")) if ($("btnFit")) $("btnFit").onclick = ()=>{ S.fitWidth=true; renderPage(); };
+  console.log("=== INSIDE WIRE RIGHT BEFORE MODE BINDING ===");
   document.querySelectorAll(".mode").forEach(b=>{
     b.onclick = ()=>{
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
@@ -3024,15 +3057,15 @@ function wire(){
     $("overlay").appendChild(ov);
   }
   
-  $("btnFieldNameOk").onclick = addFieldFromModal;
-  $("btnFieldNameCancel").onclick = () => {
+  if ($("btnFieldNameOk")) $("btnFieldNameOk").onclick = addFieldFromModal;
+  if ($("btnFieldNameCancel")) $("btnFieldNameCancel").onclick = () => {
     $("fieldNameModal").style.display = "none";
     status("Template field canceled.", "err");
   };
   $("fieldNameInput").onkeyup = e => { if (e.key === "Enter") addFieldFromModal(); };
 
   // ---- Save Template (uses custom modal instead of prompt) ----
-  $("btnSaveTemplate").onclick = () => {
+  if ($("btnSaveTemplate")) $("btnSaveTemplate").onclick = () => {
     if (!S.currentTemplate.length) {
       status("No fields defined for template.", "err");
       return;
@@ -3066,20 +3099,20 @@ function wire(){
     renderPage();
   }
   
-  $("btnSaveTemplateOk").onclick = finishSaveTemplate;
-  $("btnSaveTemplateCancel").onclick = () => $("saveTemplateModal").style.display = "none";
+  if ($("btnSaveTemplateOk")) $("btnSaveTemplateOk").onclick = finishSaveTemplate;
+  if ($("btnSaveTemplateCancel")) $("btnSaveTemplateCancel").onclick = () => $("saveTemplateModal").style.display = "none";
   $("saveTemplateNameInput").onkeyup = e => { if (e.key === "Enter") $("saveTemplateKeywordsInput").focus(); };
   $("saveTemplateKeywordsInput").onkeyup = e => { if (e.key === "Enter") finishSaveTemplate(); };
   
-  $("btnClearTemplate").onclick = () => {
+  if ($("btnClearTemplate")) $("btnClearTemplate").onclick = () => {
     S.currentTemplate = [];
     $("lblTemplateFields").textContent = `0 fields`;
     renderPage(); // Redraws and clears overlays
   };
   
-  $("btnSearch").onclick = doSearch;
+  if ($("btnSearch")) $("btnSearch").onclick = doSearch;
   $("inpSearch").onkeyup = e => { if (e.key === "Enter") doSearch(); };
-  $("btnClearSearch").onclick = () => { $("inpSearch").value = ""; $("searchResults").style.display = "none"; doSearch(); };
+  if ($("btnClearSearch")) $("btnClearSearch").onclick = () => { $("inpSearch").value = ""; $("searchResults").style.display = "none"; doSearch(); };
   
   function updateSelRectColor() {
     $("selRect").style.borderColor = getHighlightColor(S.mode, false);
@@ -3087,12 +3120,12 @@ function wire(){
   }
   updateSelRectColor();
   
-  $("btnGoto").onclick = gotoSource;
-  $("btnDeleteSnip").onclick = deleteSnip;
-  $("btnAutoMatch").onclick = autoSnip;
-  $("btnOverview").onclick = exportOverview;
-  $("btnBatchTieout").onclick = batchTieout;
-  $("btnSnipDashboard").onclick = buildDashboard;
+  if ($("btnGoto")) $("btnGoto").onclick = gotoSource;
+  if ($("btnDeleteSnip")) $("btnDeleteSnip").onclick = deleteSnip;
+  if ($("btnAutoMatch")) $("btnAutoMatch").onclick = autoSnip;
+  if ($("btnOverview")) $("btnOverview").onclick = exportOverview;
+  if ($("btnBatchTieout")) $("btnBatchTieout").onclick = batchTieout;
+  if ($("btnSnipDashboard")) $("btnSnipDashboard").onclick = buildDashboard;
 
   const selPeriod = $("selPeriod");
   const now = new Date();
@@ -3105,7 +3138,7 @@ function wire(){
     selPeriod.appendChild(opt);
   }
   selPeriod.onchange = e => { S.period = e.target.value; };
-  if ($("btnCloseDashboard")) $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
+  if ($("btnCloseDashboard")) if ($("btnCloseDashboard")) $("btnCloseDashboard").onclick = () => $("dashboardModal").style.display = "none";
 }
 }
 
