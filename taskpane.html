@@ -145,7 +145,7 @@
   <div class="row">
     <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
     <span style="flex:1"></span>
-    <button id="btnBulkRoll" class="small" title="Batch replace multiple documents for the new month">Bulk Rollforward</button>
+    <label for="bulkRollInput" id="btnBulkRoll" class="small" title="Batch replace multiple documents for the new month" style="display:inline-block; cursor:pointer;">Bulk Rollforward</label>
     <button id="btnTableMatch" class="small" title="Match selected Excel cells against a Table Template" style="background:#2e6da4; color:white;">Table Match</button>
     <button id="btnExtractForms" class="small" title="Apply a Form Template across multiple documents">Extract Forms</button>
     <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
@@ -1881,6 +1881,18 @@ function initDefaultTemplates() {
         { fieldName: "Work Completed This Period", rect: [320, 0, 450, 999], page: 1 },
         { fieldName: "Materials Stored This Period", rect: [450, 0, 550, 999], page: 1 },
         { fieldName: "Retainage Current Period", rect: [650, 0, 800, 999], page: 1 }
+      ]
+    });
+  }
+  if (!S.templates.has("Standard Pay App Form")) {
+    S.templates.set("Standard Pay App Form", {
+      category: "Standard Templates",
+      keywords: ["application no", "application date", "period through"],
+      isTable: false,
+      fields: [
+        { fieldName: "Application No", anchor: { text: "Application No", side: "right", offset: [10, -2, 60, 12] } },
+        { fieldName: "Application Date", anchor: { text: "Application Date", side: "right", offset: [10, -2, 70, 12] } },
+        { fieldName: "Period Through", anchor: { text: "Period Through", side: "right", offset: [10, -2, 70, 12] } }
       ]
     });
   }
