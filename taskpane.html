@@ -3288,23 +3288,38 @@ async function doSearch() {
 }
 
 Office.onReady(async info=>{
-  wire();
-  if (info.host !== Office.HostType.Excel){
-    status("Open this pane inside Excel.", "err"); return;
-  }
-  Office.context.document.addHandlerAsync(
-    Office.EventType.DocumentSelectionChanged, onSelectionChanged);
-  await loadRegistry();
-  await loadDocsFromWorkbook();
-  await onSelectionChanged();
-  
-  // Configure the document to automatically open this add-in when someone opens this Excel file
   try {
-    Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
-    Office.context.document.settings.saveAsync();
-  } catch(e){}
-  
-  if (!S.docs.size) status("Ready — open a PDF to start snipping.");
+    wire();
+    status("Initializing CellSnip...", "ok");
+    
+    if (info.host && info.host !== Office.HostType.Excel){
+      status("Open this pane inside Excel.", "err");
+      return;
+    }
+    
+    try {
+      Office.context.document.addHandlerAsync(
+        Office.EventType.DocumentSelectionChanged, onSelectionChanged);
+    } catch(e) { console.error("addHandlerAsync failed", e); }
+    
+    try { await loadRegistry(); } catch(e) { console.error("loadRegistry error", e); }
+    try { await loadDocsFromWorkbook(); } catch(e) { console.error("loadDocsFromWorkbook error", e); }
+    try { await onSelectionChanged(); } catch(e) { console.error("onSelectionChanged error", e); }
+    
+    try {
+      Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
+      Office.context.document.settings.saveAsync();
+    } catch(e){}
+    
+    if (!S.docs.size) {
+      status("Ready — click + PDF or drop a PDF to start.", "ok");
+    } else {
+      status(`Ready (${S.docs.size} document(s) loaded).`, "ok");
+    }
+  } catch(err) {
+    console.error("Office.onReady uncaught error", err);
+    status("Ready — click + PDF to start.", "ok");
+  }
 });
 </script>
 </body>
