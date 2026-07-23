@@ -2129,11 +2129,10 @@ function wire(){
   
   async function autoDetectTemplate(docName) {
     if (!docName || !S.docs.has(docName)) return null;
-    const b64 = S.docs.get(docName);
+    const d = S.docs.get(docName);
+    if (!d || !d.pdf) return null;
     try {
-      const arr = await base64ToArrayBufferAsync(b64);
-      const pdf = await pdfjsLib.getDocument({data: arr}).promise;
-      const page = await pdf.getPage(1);
+      const page = await d.pdf.getPage(1);
       const textContent = await page.getTextContent();
       const text = textContent.items.map(i => i.str).join(" ").toLowerCase();
       
