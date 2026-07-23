@@ -110,6 +110,7 @@
     <button class="mode" data-mode="table" title="Drag a box: text is split into rows/columns starting at the selected cell (beta)">Table<span class="kbd">3</span></button>
     <button class="mode" data-mode="image" title="Drag a box: capture region as an image and insert into Excel">Img<span class="kbd">4</span></button>
     <button class="mode" data-mode="template" title="Drag a box: define a field for a Form Extraction Template">Form Template</button>
+    <button class="mode" data-mode="table_template" title="Drag a box: define columns for a Table Match Template">Table Template</button>
     <button class="mode" data-mode="tieout" title="Drag a box: marks the selected cell as tied-out (✓) against this source">✓<span class="kbd">5</span></button>
     <button class="mode" data-mode="variance" title="Drag a box: marks the selected cell as a variance (Δ) with a note">Δ<span class="kbd">6</span></button>
     <select id="selTickmark" style="width:50px; border:1px solid #ccc; background:white; margin-left:4px;">
@@ -137,6 +138,7 @@
     <label class="chk"><input type="checkbox" id="chkOCR"> OCR fallback (scanned docs)</label>
     <span style="flex:1"></span>
     <button id="btnBulkRoll" class="small" title="Batch replace multiple documents for the new month">Bulk Rollforward</button>
+    <button id="btnTableMatch" class="small" title="Match selected Excel cells against a Table Template" style="background:#2e6da4; color:white;">Table Match</button>
     <button id="btnExtractForms" class="small" title="Apply a Form Template across multiple documents">Extract Forms</button>
     <button id="btnAutoMatch" class="small" title="Auto-reconcile selected Excel values against the loaded documents">Auto Match</button>
     <button id="btnOverview" class="small" title="Create a 'Reconciliation Backup' worksheet documenting every snip">Export backup</button>
@@ -198,7 +200,7 @@
   <div id="status">Loading…</div>
 </div>
 
-<input type="file" id="fileInput" accept="application/pdf" multiple>
+<input type="file" id="fileInput" accept="application/pdf" multiple style="display:none">
 <input type="file" id="bulkRollInput" accept="application/pdf" multiple style="display:none">
 
 <div id="bulkRollModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
@@ -222,6 +224,24 @@
   <div style="display:flex; justify-content:flex-end; gap:4px;">
     <button id="btnCancelExtractForms" class="small">Cancel</button>
     <button id="btnRunExtractForms" class="small" style="background:var(--ok); color:white;">Extract to Excel</button>
+  </div>
+</div>
+
+<div id="tableMatchModal" style="display:none; position:absolute; top:20px; left:10px; right:10px; background:white; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.2); padding:10px; z-index:999; max-height:80%; overflow-y:auto; border-radius:4px;">
+  <div style="font-weight:bold; margin-bottom:8px;">Match Table Columns</div>
+  <p style="font-size:11px; color:#555; margin-bottom: 8px;">1. Select the cells in Excel containing your Row Keys.<br>2. Pick the target document and Table Template below.</p>
+  
+  <div style="margin-bottom: 8px; font-size:11px;">
+    <label style="display:block; margin-bottom:4px; font-weight:bold;">Target Document:</label>
+    <select id="selTableMatchDoc" style="width:100%; margin-bottom:8px;"></select>
+    
+    <label style="display:block; margin-bottom:4px; font-weight:bold;">Table Template:</label>
+    <select id="selTableMatchTpl" style="width:100%; margin-bottom:8px;"></select>
+  </div>
+  
+  <div style="display:flex; justify-content:flex-end; gap:4px;">
+    <button id="btnCancelTableMatch" class="small">Cancel</button>
+    <button id="btnRunTableMatch" class="small" style="background:var(--ok); color:white;">Run Match</button>
   </div>
 </div>
 
@@ -996,7 +1016,7 @@ async function handleSnip(rect, shiftKey=false){
   const mode = S.mode;
   const pdfRect = toPdfRect(rect);
   let items = [], raw = "";
-  if (mode !== "image") {
+  if (mode !== "image" && mode !== "template" && mode !== "table_template" && mode !== "tickmark") {
     items = await extractItems(pdfRect);
     raw = itemsToText(items);
     if (!raw && $("chkOCR").checked){
@@ -1006,7 +1026,41 @@ async function handleSnip(rect, shiftKey=false){
   }
 
   let value, note;
-  if (mode === "text"){
+  if (mode === "template" || mode === "table_template"){
+    const isTable = mode === "table_template";
+    const defaultLabel = isTable && S.currentTemplate.length === 0 ? "Row Key" : "";
+    let fieldName = prompt(`Enter Field Name for this ${isTable ? 'table column' : 'template zone'} (e.g., '${defaultLabel || 'Invoice Total'}'):`, defaultLabel);
+    if (fieldName === null) {
+      status("Template field canceled.", "err");
+      return;
+    }
+    if (!fieldName.trim()) {
+      fieldName = `Column ${S.currentTemplate.length + 1}`;
+    }
+    S.currentTemplate.push({ fieldName, rect: pdfRect, page: S.page });
+    $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
+    status(`Added field "${fieldName}" to current template.`, "ok");
+    
+    // Draw a visual indicator on the canvas
+    const overlay = document.createElement("div");
+    const v = toViewRect(pdfRect);
+    Object.assign(overlay.style, {
+      position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
+      border: "2px solid #0284c7", background: "rgba(2, 132, 199, 0.2)",
+      pointerEvents: "none", zIndex: 10
+    });
+    const lbl = document.createElement("div");
+    lbl.textContent = fieldName;
+    Object.assign(lbl.style, {
+      background: "#0284c7", color: "white", fontSize: "10px", padding: "2px 4px", position: "absolute", top: "-14px", left: "-2px"
+    });
+    overlay.appendChild(lbl);
+    $("overlay").appendChild(overlay);
+    
+    return; // Don't write to Excel
+  } else if (mode === "tickmark"){
+    value = $("selTickmark").value;
+  } else if (mode === "text"){
     if (!raw){ status("No text found in selection (enable OCR for scanned docs).", "err"); return; }
     value = coerce(raw);
   } else if (mode === "image"){
@@ -1055,35 +1109,6 @@ async function handleSnip(rect, shiftKey=false){
     await writeSnip(resolvedMode, value, raw, pdfRect, note, shiftKey);
     drawHighlight(pdfRect, resolvedMode, "");
     return;
-  } else if (mode === "tickmark"){
-    value = $("selTickmark").value;
-  } else if (mode === "template"){
-    const fieldName = prompt("Enter Field Name for this template zone (e.g., 'Invoice Total'):");
-    if (!fieldName) {
-      status("Template field canceled.", "err");
-      return;
-    }
-    S.currentTemplate.push({ fieldName, rect: pdfRect, page: S.page });
-    $("lblTemplateFields").textContent = `${S.currentTemplate.length} fields`;
-    status(`Added field "${fieldName}" to current template.`, "ok");
-    
-    // Draw a visual indicator on the canvas
-    const overlay = document.createElement("div");
-    const v = toViewRect(pdfRect);
-    Object.assign(overlay.style, {
-      position: "absolute", left: v.x+"px", top: v.y+"px", width: v.w+"px", height: v.h+"px",
-      border: "2px solid #0284c7", background: "rgba(2, 132, 199, 0.2)",
-      pointerEvents: "none", zIndex: 10
-    });
-    const lbl = document.createElement("div");
-    lbl.textContent = fieldName;
-    Object.assign(lbl.style, {
-      background: "#0284c7", color: "white", fontSize: "10px", padding: "2px 4px", position: "absolute", top: "-14px", left: "-2px"
-    });
-    overlay.appendChild(lbl);
-    $("overlay").appendChild(overlay);
-    
-    return; // Don't write to Excel
   }
   
   try {
@@ -1220,6 +1245,7 @@ async function autoSnip() {
     
     const sheetName = rng.worksheet.name;
     let matchCount = 0;
+    const parseNum = (t) => { const n = parseNumbers(t); return n.length ? n[0] : null; };
     
     const docPages = []; 
     for (const [docName, d] of S.docs.entries()) {
@@ -1842,6 +1868,7 @@ function wire(){
     
     const categories = {};
     for (const [name, data] of S.templates.entries()) {
+      if (data && data.isTable) continue; // Don't show Table Templates in Form Extraction
       const isArr = Array.isArray(data);
       const cat = isArr ? "User Templates" : (data.category || "User Templates");
       if (!categories[cat]) categories[cat] = [];
@@ -1858,6 +1885,207 @@ function wire(){
     }
     html += `</select>`;
     return html;
+  }
+
+  $("btnTableMatch").onclick = () => {
+    if (S.docs.size === 0) {
+      status("No documents available.", "err");
+      return;
+    }
+    
+    // Filter templates to only table templates
+    const tableTpls = [];
+    for (const [name, data] of S.templates.entries()) {
+      if (data && data.isTable) tableTpls.push(name);
+    }
+    if (tableTpls.length === 0) {
+      status("No Table Templates available. Use 'Table Template' mode to create one.", "err");
+      return;
+    }
+    
+    $("tableMatchModal").style.display = "block";
+    
+    // Populate docs
+    const selDoc = $("selTableMatchDoc");
+    selDoc.innerHTML = "";
+    for (const doc of S.docs.keys()) {
+      selDoc.appendChild(new Option(doc, doc));
+    }
+    if (S.cur) selDoc.value = S.cur;
+    
+    // Populate templates
+    const selTpl = $("selTableMatchTpl");
+    selTpl.innerHTML = "";
+    for (const tpl of tableTpls) {
+      selTpl.appendChild(new Option(tpl, tpl));
+    }
+  };
+
+  $("btnCancelTableMatch").onclick = () => $("tableMatchModal").style.display = "none";
+  
+  $("btnRunTableMatch").onclick = async () => {
+    const docName = $("selTableMatchDoc").value;
+    const tplName = $("selTableMatchTpl").value;
+    if (!docName || !tplName) return;
+    
+    $("tableMatchModal").style.display = "none";
+    status("Running Table Match...", "ok");
+    
+    try {
+      await executeTableMatch(docName, tplName);
+    } catch(e) {
+      status("Table Match failed: " + e.message, "err");
+    }
+  };
+
+  async function executeTableMatch(docName, tplName) {
+    const tplData = S.templates.get(tplName);
+    if (!tplData || !tplData.isTable) throw new Error("Invalid Table Template");
+    const fields = tplData.fields;
+    if (fields.length < 2) throw new Error("Table template must have at least a Row Key field and one Target field. You must draw a box around the key column first.");
+    
+    // The first field is the row key column, the rest are target columns
+    const keyField = fields[0];
+    const targetFields = fields.slice(1);
+    
+    const doc = S.docs.get(docName);
+    if (!doc) throw new Error("Document not found");
+    
+    // 1. Get the Excel selection
+    let selectionData;
+    await Excel.run(async ctx => {
+      const rng = ctx.workbook.getSelectedRange();
+      rng.load(["values", "rowIndex", "columnIndex", "worksheet/name", "rowCount"]);
+      await ctx.sync();
+      selectionData = {
+        values: rng.values,
+        rowIndex: rng.rowIndex,
+        colIndex: rng.columnIndex,
+        sheet: rng.worksheet.name,
+        rowCount: rng.rowCount
+      };
+    });
+    
+    if (!selectionData || !selectionData.values.length) throw new Error("No Excel selection");
+    
+    // Build a map of keys to Excel rows
+    const keysToFind = [];
+    for (let i = 0; i < selectionData.rowCount; i++) {
+      let k = String(selectionData.values[i][0] || "").trim();
+      if (k) keysToFind.push({ key: k, rowOffset: i });
+    }
+    
+    if (keysToFind.length === 0) {
+      status("No keys found in Excel selection.", "err");
+      return;
+    }
+    
+    // 2. Pre-scan PDF to find where these keys exist
+    const kx1 = keyField.rect[0] - 20; // 20pt horizontal padding
+    const kx2 = keyField.rect[2] + 20;
+    
+    const matchResults = []; // { key, rowOffset, page, matchedY, matchedH }
+    
+    for (let p = 1; p <= doc.pdf.numPages; p++) {
+      const pageObj = await doc.pdf.getPage(p);
+      const tc = await pageObj.getTextContent();
+      
+      for (const it of tc.items) {
+        if (!it.str) continue;
+        const str = it.str.trim();
+        if (!str) continue;
+        
+        const matchedReq = keysToFind.find(req => req.key === str);
+        if (matchedReq) {
+          const x = it.transform[4];
+          if (x >= kx1 && x <= kx2) {
+            matchResults.push({
+              key: str,
+              rowOffset: matchedReq.rowOffset,
+              page: p,
+              pageObj: pageObj,
+              y: it.transform[5],
+              h: it.height || 10
+            });
+          }
+        }
+      }
+    }
+    
+    if (matchResults.length === 0) {
+      status("No matches found for the selected keys in the PDF.", "err");
+      return;
+    }
+    
+    // 3. Extract target columns
+    const outputData = [];
+    for (let i=0; i<selectionData.rowCount; i++) outputData.push(new Array(targetFields.length).fill(""));
+    
+    let matchedCount = 0;
+    const snipsToAdd = [];
+    
+    for (const match of matchResults) {
+      // Dynamic row bounds
+      const rowY1 = match.y - 4;
+      const rowY2 = match.y + match.h + 4;
+      
+      const outRow = [];
+      for (let j = 0; j < targetFields.length; j++) {
+        const tf = targetFields[j];
+        // Dynamic bounding box for this column
+        const dynRect = [tf.rect[0], rowY1, tf.rect[2], rowY2];
+        
+        let extracted = "";
+        try {
+          const items = await extractItems(dynRect, match.pageObj);
+          if (items.length > 0) {
+            const rowsGrouped = groupRows(items);
+            extracted = rowsGrouped.map(r => r.map(i => i.str).join(" ")).join("\n").trim();
+          }
+          extracted = extracted ? (coerce(extracted) ?? extracted) : "";
+        } catch(e) { console.error(e); }
+        
+        outRow.push(extracted);
+        
+        const outSheet = selectionData.sheet;
+        const outColIndex = selectionData.colIndex + 1 + j;
+        const outRowIndex = selectionData.rowIndex + match.rowOffset;
+        const outAddr = `${getColLetter(outColIndex)}${outRowIndex + 1}`;
+        const snipKey = `${outSheet}!${outAddr}`;
+        
+        if (extracted !== "") {
+          snipsToAdd.push({
+            snipKey, sheet: outSheet, addr: outAddr, mode: "text", value: extracted, 
+            doc: docName, page: match.page, rect: dynRect, raw: extracted, ts: new Date().toISOString()
+          });
+        }
+      }
+      
+      outputData[match.rowOffset] = outRow;
+      matchedCount++;
+    }
+    
+    // 4. Write to Excel
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItem(selectionData.sheet);
+      const outRange = ws.getRangeByIndexes(selectionData.rowIndex, selectionData.colIndex + 1, selectionData.rowCount, targetFields.length);
+      outRange.values = outputData;
+      
+      if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
+        for (const s of snipsToAdd) {
+          const cell = ws.getRange(s.addr);
+          ws.comments.add(cell, `[CellSnip TABLE MATCH]\nSource: ${docName}, p.${s.page}`);
+        }
+      }
+      
+      outRange.format.autofitColumns();
+      await ctx.sync();
+    });
+    
+    for (const s of snipsToAdd) S.registry.set(s.snipKey, s);
+    await saveRegistry();
+    
+    status(`Table Match complete. Matched ${matchedCount} keys.`, "ok");
   }
 
   $("btnExtractForms").onclick = async () => {
@@ -2041,7 +2269,7 @@ function wire(){
       document.querySelectorAll(".mode").forEach(x=>x.classList.remove("active"));
       b.classList.add("active"); S.mode = b.dataset.mode;
       updateSelRectColor();
-      $("templateOptions").style.display = S.mode === "template" ? "flex" : "none";
+      $("templateOptions").style.display = (S.mode === "template" || S.mode === "table_template") ? "flex" : "none";
     };
   });
   
@@ -2071,11 +2299,13 @@ function wire(){
     // Prompt for keywords for auto-detection
     const kwInput = prompt("Enter comma-separated keywords to automatically match this template to PDFs (e.g. 'Invoice, Bill To, Due Date'):", "");
     const keywords = kwInput ? kwInput.split(",").map(k => k.trim()).filter(Boolean) : [];
+    const isTable = S.mode === "table_template";
     
     // Ensure saved user templates use the object format so they group correctly
     S.templates.set(name.trim(), {
       category: "User Templates",
       keywords: keywords,
+      isTable: isTable,
       fields: [...S.currentTemplate]
     });
     S.currentTemplate = [];
