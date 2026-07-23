@@ -912,21 +912,41 @@ function toViewRect(pdfRect){
 "use strict";
 
 /* ---------------- text extraction ---------------- */
+
+/* Keep only items whose center falls inside pdfRect, sorted top-to-bottom
+   (PDF y is bottom-up) then left-to-right. Shared by the PDF text layer and
+   the OCR word fallback so both produce identically-shaped item lists. */
+function filterItemsInRect(items, pdfRect){
+  const out = [];
+  for (const it of items){
+    const cx = it.x + it.w/2, cy = it.y + it.h/2;
+    if (cx >= pdfRect[0] && cx <= pdfRect[2] && cy >= pdfRect[1] && cy <= pdfRect[3])
+      out.push(it);
+  }
+  out.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+  return out;
+}
+
 async function extractItems(pdfRect, pageObj = S.pageObj){
   // returns text items inside pdfRect: [{str,x,y,w,h}]
   const tc = await pageObj.getTextContent();
-  const out = [];
-  for (const it of tc.items){
-    if (!it.str || !it.str.trim()) continue;
-    const x = it.transform[4], y = it.transform[5];
-    const w = it.width, h = it.height || Math.abs(it.transform[3]) || 8;
-    const cx = x + w/2, cy = y + h/2;                    // item center
-    if (cx >= pdfRect[0] && cx <= pdfRect[2] && cy >= pdfRect[1] && cy <= pdfRect[3])
-      out.push({str: it.str, x, y, w, h});
+  return filterItemsInRect(mapTextItems(tc), pdfRect);
+}
+
+/* Same as extractItems, but falls back to a cached whole-page OCR pass
+   (see ocrPageWords) when the page has no text layer, so table/form value
+   extraction works on scanned documents too. doc/pageNum are needed to key
+   the OCR cache. */
+async function extractItemsAny(pdfRect, doc, pageObj, pageNum){
+  const textItems = await extractItems(pdfRect, pageObj);
+  if (textItems.length) return textItems;
+  if ($("chkOCR") && $("chkOCR").checked){
+    try {
+      const words = await ocrPageWords(doc, pageObj, pageNum);
+      return filterItemsInRect(words, pdfRect);
+    } catch(e) { console.error("OCR extraction failed", e); }
   }
-  // sort: top-to-bottom (pdf y is up), then left-to-right
-  out.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
-  return out;
+  return [];
 }
 
 async function ocrRect(rect, pageObj = S.pageObj, baseScale = S.scale){
@@ -976,21 +996,18 @@ async function ocrPageWords(doc, pageObj, pageNum, scale = 2.0){
       const y1 = Math.min(p1[1], p2[1]), y2 = Math.max(p1[1], p2[1]);
       items.push({ str: w.text, x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
     }
-    // OCR gives one box per word, but a usable anchor is usually a whole
-    // label ("Application Date", not just "Date"). Merge words that sit
-    // close together on the same row so anchors are as distinctive as the
-    // multi-word text runs a real PDF text layer would give us.
-    return mergeAdjacentWords(items);
+    return items; // raw, one box per word — callers merge/filter as needed
   })();
 
   doc._ocrWordsCache[pageNum] = promise;
   return promise;
 }
 
-/* Text items to use for anchor detection/resolution on a page: the PDF's
-   real text layer when it has one, otherwise a whole-page OCR pass (only
-   if OCR fallback is enabled) for scanned documents. */
-async function getPageAnchorItems(doc, pageObj, pageNum){
+/* Text items (raw, one item per PDF text run or OCR word) for a page: the
+   PDF's real text layer when it has one, otherwise a whole-page OCR pass
+   (only if OCR fallback is enabled) for scanned documents. Used for value
+   extraction and for row-key search, where each item should stay separate. */
+async function getPageRawItems(doc, pageObj, pageNum){
   const tc = await pageObj.getTextContent();
   const items = mapTextItems(tc);
   if (items.length > 3) return items;
@@ -999,6 +1016,23 @@ async function getPageAnchorItems(doc, pageObj, pageNum){
     catch(e) { console.error("Page OCR failed", e); }
   }
   return items;
+}
+
+/* Text items for anchor/label search: same as getPageRawItems, but OCR
+   words are merged into phrase-like tokens (see mergeAdjacentWords) so a
+   label reads as one distinctive anchor instead of several ambiguous
+   single words. */
+async function getPageAnchorItems(doc, pageObj, pageNum){
+  const tc = await pageObj.getTextContent();
+  const textItems = mapTextItems(tc);
+  // A real text layer's runs are already phrase-sized ("Application Date:")
+  // — only OCR's one-box-per-word output needs merging into phrases.
+  if (textItems.length > 3) return textItems;
+  if ($("chkOCR") && $("chkOCR").checked){
+    try { return mergeAdjacentWords(await ocrPageWords(doc, pageObj, pageNum)); }
+    catch(e) { console.error("Page OCR failed", e); }
+  }
+  return textItems;
 }
 
 /* text items -> single string (joins rows with newline) */
@@ -1139,16 +1173,18 @@ async function resolveFieldRect(doc, field){
     let pageObj, items;
     try {
       pageObj = await doc.pdf.getPage(p);
-      const hasCachedOcr = doc._ocrWordsCache && doc._ocrWordsCache[p];
-      if (!hasCachedOcr && ocrBudget <= 0){
-        const tc = await pageObj.getTextContent();
-        items = mapTextItems(tc);
-        if (!items.length) continue; // out of OCR budget, skip un-OCR'd pages
+      const tc = await pageObj.getTextContent();
+      const textItems = mapTextItems(tc);
+      if (textItems.length > 3){
+        items = textItems; // real text layer, no OCR needed
       } else {
-        const tc = await pageObj.getTextContent();
-        items = mapTextItems(tc);
-        if (items.length <= 3 && !hasCachedOcr) ocrBudget--;
-        if (items.length <= 3) items = await getPageAnchorItems(doc, pageObj, p);
+        const hasCachedOcr = !!(doc._ocrWordsCache && doc._ocrWordsCache[p]);
+        if (!hasCachedOcr && ocrBudget <= 0){
+          items = textItems; // out of OCR budget, skip un-OCR'd pages
+        } else {
+          if (!hasCachedOcr) ocrBudget--;
+          items = await getPageAnchorItems(doc, pageObj, p);
+        }
       }
     } catch(e) { continue; }
 
@@ -2399,29 +2435,29 @@ function wire(){
     
     for (let p = 1; p <= doc.pdf.numPages; p++) {
       const pageObj = await doc.pdf.getPage(p);
-      const tc = await pageObj.getTextContent();
-      
-      for (const it of tc.items) {
-        if (!it.str) continue;
-        const str = it.str.trim();
+      // Falls back to whole-page OCR (cached) when this page has no text
+      // layer, so Table Match also works on scanned schedules of values.
+      const items = await getPageRawItems(doc, pageObj, p);
+
+      for (const it of items) {
+        const str = (it.str || "").trim();
         if (!str) continue;
-        
+
         const normStr = str.toLowerCase().replace(/[\s\xA0]+/g, "");
         const matchedReq = keysToFind.find(req => {
           const normReq = req.key.toLowerCase().replace(/[\s\xA0]+/g, "");
           return normStr === normReq || (normStr.length > 2 && normReq.length > 2 && normStr.includes(normReq));
         });
-        
+
         if (matchedReq) {
-          const x = it.transform[4];
-          if (x >= kx1 && x <= kx2) {
+          if (it.x >= kx1 && it.x <= kx2) {
             matchResults.push({
               key: matchedReq.key,
               rowOffset: matchedReq.rowOffset,
               page: p,
               pageObj: pageObj,
-              y: it.transform[5],
-              h: it.height || 10
+              y: it.y,
+              h: it.h || 10
             });
           }
         }
@@ -2453,7 +2489,7 @@ function wire(){
         
         let extracted = "";
         try {
-          const items = await extractItems(dynRect, match.pageObj);
+          const items = await extractItemsAny(dynRect, doc, match.pageObj, match.page);
           if (items.length > 0) {
             const rowsGrouped = groupRows(items);
             extracted = rowsGrouped.map(r => r.map(i => i.str).join(" ")).join("\n").trim();
@@ -2619,17 +2655,13 @@ function wire(){
                 }
 
                 let raw = "";
-                const items = await extractItems(useRect, pageObj);
+                // Falls back to a cached whole-page OCR pass when this page
+                // has no text layer (one OCR pass per page, reused across
+                // every field/document instead of one Tesseract call each).
+                const items = await extractItemsAny(useRect, doc, pageObj, matchedPage);
                 if (items.length > 0) {
                   const rowsGrouped = groupRows(items);
                   raw = rowsGrouped.map(row => row.map(i => i.str).join(" ")).join("\n").trim();
-                } else if ($("chkOCR") && $("chkOCR").checked) {
-                  // OCR fallback
-                  const vp = pageObj.getViewport({ scale: S.scale || 1.0 });
-                  const a = vp.convertToViewportPoint(useRect[0], useRect[1]);
-                  const b = vp.convertToViewportPoint(useRect[2], useRect[3]);
-                  const vRect = { x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), w: Math.abs(b[0]-a[0]), h: Math.abs(b[1]-a[1]) };
-                  raw = await ocrRect(vRect, pageObj, S.scale || 1.0);
                 }
 
                 extracted = raw ? (coerce(raw) ?? raw) : "";
