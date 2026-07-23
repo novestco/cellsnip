@@ -2457,9 +2457,6 @@ function wire(){
     
     if (keysToFind.length === 0) {
       status("No keys found in Excel selection.", "err");
-      return;
-    }
-    
     // Helper to normalize strings (remove spaces, hyphens, en-dashes, em-dashes, and normalize O/0, I/1 for OCR)
     const norm = str => String(str).toLowerCase()
       .replace(/[oO]/g, "0")
@@ -2467,55 +2464,72 @@ function wire(){
       .replace(/[\s\xA0\u2013\u2014\-]+/g, "");
     
     // 2. Pre-scan PDF pages to find where these keys exist
-    const matchResults = []; // { key, rowOffset, page, matchedY, matchedH }
+    // Search selected document first; if 0 matches, search ALL loaded documents automatically!
+    const docsToSearch = [docName];
+    for (const dName of S.docs.keys()) {
+      if (dName !== docName) docsToSearch.push(dName);
+    }
     
-    for (let p = 1; p <= doc.pdf.numPages; p++) {
-      const pageObj = await doc.pdf.getPage(p);
-      // Falls back to a cached whole-page OCR pass when this page has no
-      // text layer, so Table Match also works on scanned schedules of
-      // values; the same cached items are reused below for column values
-      // so a scanned page only gets OCR'd once, not once per row/column.
-      const { items: validItems } = await getCachedPageItems(doc, pageObj, p);
+    let matchResults = [];
+    let matchedDocName = docName;
+    let matchedDoc = doc;
+    
+    for (const currentDocName of docsToSearch) {
+      const currentDoc = S.docs.get(currentDocName);
+      if (!currentDoc || !currentDoc.pdf) continue;
+      
+      const currentResults = [];
+      for (let p = 1; p <= currentDoc.pdf.numPages; p++) {
+        const pageObj = await currentDoc.pdf.getPage(p);
+        const { items: validItems } = await getCachedPageItems(currentDoc, pageObj, p);
 
-      if (!validItems.length) continue;
+        if (!validItems.length) continue;
 
-      // Group page items into visual rows
-      const visualRows = groupRows(validItems).map(rowItems => {
-        const rowText = rowItems.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
-        const avgY = rowItems.reduce((sum, i) => sum + i.y, 0) / rowItems.length;
-        const maxH = Math.max(...rowItems.map(i => i.h), 10);
-        return { text: rowText, items: rowItems, y: avgY, h: maxH };
-      });
-
-      for (const req of keysToFind) {
-        const normReq = norm(req.key);
-        if (!normReq) continue;
-
-        // Find matching row
-        const matchedRow = visualRows.find(vRow => {
-          const normRowText = norm(vRow.text);
-          return normRowText.includes(normReq);
+        // Group page items into visual rows
+        const visualRows = groupRows(validItems).map(rowItems => {
+          const rowText = rowItems.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
+          const avgY = rowItems.reduce((sum, i) => sum + i.y, 0) / rowItems.length;
+          const maxH = Math.max(...rowItems.map(i => i.h), 10);
+          return { text: rowText, items: rowItems, y: avgY, h: maxH };
         });
 
-        if (matchedRow) {
-          // Avoid duplicate matches for the same key on the same page
-          if (!matchResults.some(r => r.key === req.key && r.page === p)) {
-            matchResults.push({
-              key: req.key,
-              rowOffset: req.rowOffset,
-              page: p,
-              pageObj: pageObj,
-              y: matchedRow.y,
-              h: matchedRow.h
-            });
+        for (const req of keysToFind) {
+          const normReq = norm(req.key);
+          if (!normReq) continue;
+
+          // Find matching row
+          const matchedRow = visualRows.find(vRow => {
+            const normRowText = norm(vRow.text);
+            return normRowText.includes(normReq);
+          });
+
+          if (matchedRow) {
+            // Avoid duplicate matches for the same key on the same page
+            if (!currentResults.some(r => r.key === req.key && r.page === p)) {
+              currentResults.push({
+                key: req.key,
+                rowOffset: req.rowOffset,
+                page: p,
+                pageObj: pageObj,
+                y: matchedRow.y,
+                h: matchedRow.h
+              });
+            }
           }
         }
+      }
+      
+      if (currentResults.length > 0) {
+        matchResults = currentResults;
+        matchedDocName = currentDocName;
+        matchedDoc = currentDoc;
+        break; // Found the document containing these keys!
       }
     }
     
     if (matchResults.length === 0) {
       const sampleKeys = [...new Set(keysToFind.map(k => k.key))].slice(0, 3).join(", ");
-      status(`No matches found for keys (${sampleKeys}) in ${docName}. If this is a scanned document, turn on OCR fallback and try again.`, "err");
+      status(`No matches found for keys (${sampleKeys}) in any loaded PDF.`, "err");
       return;
     }
     
@@ -2539,7 +2553,7 @@ function wire(){
         
         let extracted = "";
         try {
-          const items = await extractItemsAny(dynRect, doc, match.pageObj, match.page);
+          const items = await extractItemsAny(dynRect, matchedDoc, match.pageObj, match.page);
           if (items.length > 0) {
             const rowsGrouped = groupRows(items);
             extracted = rowsGrouped.map(r => r.map(i => i.str).join(" ")).join("\n").trim();
@@ -2558,7 +2572,7 @@ function wire(){
         if (extracted !== "") {
           snipsToAdd.push({
             snipKey, sheet: outSheet, addr: outAddr, mode: "text", value: extracted, 
-            doc: docName, page: match.page, rect: dynRect, raw: extracted, ts: new Date().toISOString()
+            doc: matchedDocName, page: match.page, rect: dynRect, raw: extracted, ts: new Date().toISOString()
           });
         }
       }
@@ -2576,7 +2590,7 @@ function wire(){
       if (Office.context.requirements.isSetSupported("ExcelApi","1.10")){
         for (const s of snipsToAdd) {
           const cell = ws.getRange(s.addr);
-          ws.comments.add(cell, `[CellSnip TABLE MATCH]\nSource: ${docName}, p.${s.page}`);
+          ws.comments.add(cell, `[CellSnip TABLE MATCH]\nSource: ${matchedDocName}, p.${s.page}`);
         }
       }
       
@@ -2587,7 +2601,7 @@ function wire(){
     for (const s of snipsToAdd) S.registry.set(s.snipKey, s);
     await saveRegistry();
     
-    status(`Table Match complete. Matched ${matchedCount} keys.`, "ok");
+    status(`Table Match complete. Matched ${matchedCount} keys in ${matchedDocName}.`, "ok");
   }
 
   $("btnExtractForms").onclick = async () => {
