@@ -2201,37 +2201,50 @@ function wire(){
       return;
     }
     
-    // 2. Pre-scan PDF to find where these keys exist
-    const kx1 = keyField.rect[0] - 20; // 20pt horizontal padding
-    const kx2 = keyField.rect[2] + 20;
-    
+    // 2. Pre-scan PDF pages to find where these keys exist
     const matchResults = []; // { key, rowOffset, page, matchedY, matchedH }
     
     for (let p = 1; p <= doc.pdf.numPages; p++) {
       const pageObj = await doc.pdf.getPage(p);
       const tc = await pageObj.getTextContent();
+      const validItems = tc.items.filter(it => it.str && it.str.trim()).map(it => ({
+        str: it.str.trim(),
+        x: it.transform[4],
+        y: it.transform[5],
+        w: it.width || 40,
+        h: it.height || Math.abs(it.transform[3]) || 10
+      }));
       
-      for (const it of tc.items) {
-        if (!it.str) continue;
-        const str = it.str.trim();
-        if (!str) continue;
+      if (!validItems.length) continue;
+      
+      // Group page items into visual rows
+      const visualRows = groupRows(validItems).map(rowItems => {
+        const rowText = rowItems.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
+        const avgY = rowItems.reduce((sum, i) => sum + i.y, 0) / rowItems.length;
+        const maxH = Math.max(...rowItems.map(i => i.h), 10);
+        return { text: rowText, items: rowItems, y: avgY, h: maxH };
+      });
+      
+      for (const req of keysToFind) {
+        const normReq = req.key.toLowerCase().replace(/[\s\xA0]+/g, "");
+        if (!normReq) continue;
         
-        const normStr = str.toLowerCase().replace(/[\s\xA0]+/g, "");
-        const matchedReq = keysToFind.find(req => {
-          const normReq = req.key.toLowerCase().replace(/[\s\xA0]+/g, "");
-          return normStr === normReq || (normStr.length > 2 && normReq.length > 2 && normStr.includes(normReq));
+        // Find matching row
+        const matchedRow = visualRows.find(vRow => {
+          const normRowText = vRow.text.toLowerCase().replace(/[\s\xA0]+/g, "");
+          return normRowText.includes(normReq);
         });
         
-        if (matchedReq) {
-          const x = it.transform[4];
-          if (x >= kx1 && x <= kx2) {
+        if (matchedRow) {
+          // Avoid duplicate matches for the same key on the same page
+          if (!matchResults.some(r => r.key === req.key && r.page === p)) {
             matchResults.push({
-              key: matchedReq.key,
-              rowOffset: matchedReq.rowOffset,
+              key: req.key,
+              rowOffset: req.rowOffset,
               page: p,
               pageObj: pageObj,
-              y: it.transform[5],
-              h: it.height || 10
+              y: matchedRow.y,
+              h: matchedRow.h
             });
           }
         }
