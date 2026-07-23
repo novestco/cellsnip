@@ -1554,8 +1554,27 @@ async function loadRegistry(){
         }
       }
     });
+    initDefaultTemplates();
     if (S.registry.size) status(`Restored ${S.registry.size} snip(s) from workbook.`, "ok");
-  }catch(e){ /* first run */ }
+  }catch(e){ 
+    initDefaultTemplates();
+  }
+}
+
+function initDefaultTemplates() {
+  if (!S.templates.has("G703 Schedule of Values")) {
+    S.templates.set("G703 Schedule of Values", {
+      category: "Standard Templates",
+      keywords: ["schedule of values", "application for payment", "continuation sheet", "g703", "g-703", "cost code"],
+      isTable: true,
+      fields: [
+        { fieldName: "Row Key", rect: [5, 0, 90, 999], page: 1 },
+        { fieldName: "Work Completed This Period", rect: [320, 0, 450, 999], page: 1 },
+        { fieldName: "Materials Stored This Period", rect: [450, 0, 550, 999], page: 1 },
+        { fieldName: "Retainage Current Period", rect: [650, 0, 800, 999], page: 1 }
+      ]
+    });
+  }
 }
 const safeJson = s => { try{ return JSON.parse(s); }catch(_){ return null; } };
 
