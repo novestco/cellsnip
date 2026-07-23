@@ -1866,106 +1866,186 @@ function wire(){
     }
   }
 
-  // Auto-build a Table Template by scanning the PDF for known column headers
-  async function autoCreateTableTemplate(docName, columnDefs) {
-    /* columnDefs: [{ headerPatterns: ["pattern1","pattern2"], fieldName: "Column Name" }, ...]
-       First entry is always the Row Key column. */
+  // Auto-build a Table Template by scanning the PDF for column positions
+  // Uses a smarter approach: find the first data row (by locating the Row Key pattern),
+  // then use the X positions of all items in that row to define column boundaries.
+  async function createG703Template(docName) {
     const d = S.docs.get(docName);
     if (!d || !d.pdf) throw new Error("Document not loaded");
     
     const page = await d.pdf.getPage(1);
     const tc = await page.getTextContent();
-    const items = tc.items.filter(it => it.str && it.str.trim());
+    const allItems = tc.items.filter(it => it.str && it.str.trim());
     
-    // Build a flat list of text items with positions
-    const textItems = items.map(it => ({
+    // Debug: dump all text items to console
+    console.log("=== PDF TEXT ITEMS (page 1) ===");
+    const textItems = allItems.map(it => ({
       str: it.str.trim(),
-      x: it.transform[4],
-      y: it.transform[5],
-      w: it.width || 50,
-      h: it.height || Math.abs(it.transform[3]) || 10
+      x: Math.round(it.transform[4] * 10) / 10,
+      y: Math.round(it.transform[5] * 10) / 10,
+      w: Math.round((it.width || 50) * 10) / 10,
+      h: Math.round((it.height || Math.abs(it.transform[3]) || 10) * 10) / 10
+    }));
+    console.table(textItems.slice(0, 80));
+    
+    // Strategy: find the first row that looks like a cost code (e.g. "1-000", "2-016")
+    // Then use items at that Y-level to map column positions
+    const costCodePattern = /^\d{1,2}-\d{2,4}$/;
+    
+    // Group items into visual rows
+    const rows = [];
+    const tol = 4;
+    for (const it of textItems) {
+      const row = rows.find(r => Math.abs(r.y - it.y) <= tol);
+      if (row) { row.items.push(it); row.y = (row.y + it.y) / 2; }
+      else rows.push({ y: it.y, items: [it] });
+    }
+    rows.sort((a, b) => b.y - a.y); // top to bottom (PDF y is bottom-up)
+    
+    // Find the first row containing a cost-code-like item
+    let dataRow = null;
+    let keyItem = null;
+    for (const row of rows) {
+      for (const it of row.items) {
+        if (costCodePattern.test(it.str)) {
+          dataRow = row;
+          keyItem = it;
+          break;
+        }
+      }
+      if (dataRow) break;
+    }
+    
+    if (!dataRow || !keyItem) {
+      // Fallback: try finding item "1" or first numeric-looking item in a row with many items
+      for (const row of rows) {
+        if (row.items.length >= 8) { // data rows typically have many columns
+          const first = row.items.sort((a, b) => a.x - b.x)[0];
+          if (/^\d/.test(first.str)) {
+            dataRow = row;
+            keyItem = first;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (!dataRow || !keyItem) throw new Error("Could not find a data row with cost codes");
+    
+    console.log("Found data row at y=" + dataRow.y, "with", dataRow.items.length, "items");
+    console.log("Key item:", keyItem.str, "at x=" + keyItem.x);
+    
+    // Sort row items left to right
+    const sortedItems = [...dataRow.items].sort((a, b) => a.x - b.x);
+    console.log("Row items L-R:", sortedItems.map(i => `"${i.str}" @x=${i.x}`));
+    
+    // The key column is the leftmost cost-code item
+    // Now we need to identify which columns are "Work Completed This Period",
+    // "Materials Stored This Period", and "Retainage Current Period"
+    // 
+    // In a standard G703, the columns from left to right are approximately:
+    // Cost Code | Trade Desc | Subcontractor | Scheduled Value | Contract/PO | 
+    // Owner Changes | Adjusted Schedule | Previous Applications | 
+    // Work Completed This Period | Materials Stored This Period |
+    // Completed to Date | % Complete | Balance | Retainage Prev | Retainage Current | 
+    // Total Withheld | Net Current
+    //
+    // Strategy: find all numeric items in the row and identify them by position index
+    
+    const numericItems = sortedItems.filter(it => {
+      const cleaned = it.str.replace(/[$,.()\s-]/g, "");
+      return /^\d+$/.test(cleaned) && cleaned.length > 0;
+    });
+    
+    console.log("Numeric items:", numericItems.map(i => `"${i.str}" @x=${i.x}`));
+    
+    // Build fields array
+    const fields = [];
+    
+    // Row Key: the cost code column
+    fields.push({
+      fieldName: "Row Key",
+      rect: [keyItem.x - 5, 0, keyItem.x + Math.max(keyItem.w, 30) + 5, 999],
+      page: 1
+    });
+    
+    // For the target columns, we need to scan the header area to find which
+    // X positions correspond to which headers.
+    // Look at items ABOVE the data row (higher Y in PDF coords) for header text
+    const headerItems = textItems.filter(it => it.y > dataRow.y + 5);
+    
+    // Group header items by X proximity to find column header clusters
+    const headerClusters = [];
+    for (const it of headerItems) {
+      const cluster = headerClusters.find(c => Math.abs(c.x - it.x) <= 15);
+      if (cluster) { cluster.items.push(it); cluster.x = (cluster.x + it.x) / 2; }
+      else headerClusters.push({ x: it.x, items: [it] });
+    }
+    
+    // For each header cluster, join text to identify the column
+    const columnHeaders = headerClusters.map(c => ({
+      x: c.x,
+      text: c.items.map(i => i.str).join(" ").toLowerCase(),
+      items: c.items
     }));
     
-    // For each column definition, find the header text position
-    const fields = [];
-    for (const col of columnDefs) {
-      let bestItem = null;
-      for (const pattern of col.headerPatterns) {
-        const pat = pattern.toLowerCase();
-        // Try exact match first, then partial
-        for (const it of textItems) {
-          if (it.str.toLowerCase() === pat) { bestItem = it; break; }
-        }
-        if (bestItem) break;
-        for (const it of textItems) {
-          if (it.str.toLowerCase().includes(pat)) { bestItem = it; break; }
-        }
-        if (bestItem) break;
-      }
-      
-      if (!bestItem) {
-        // Try joining adjacent items for multi-word headers
-        for (const pattern of col.headerPatterns) {
-          const pat = pattern.toLowerCase();
-          const fullText = textItems.map(i => i.str).join(" ").toLowerCase();
-          const idx = fullText.indexOf(pat);
-          if (idx >= 0) {
-            // Find the item that overlaps this position
-            let charCount = 0;
-            for (const it of textItems) {
-              charCount += it.str.length + 1;
-              if (charCount > idx) { bestItem = it; break; }
-            }
-          }
-          if (bestItem) break;
-        }
-      }
-      
-      if (bestItem) {
-        // Build a bounding rect for this column (x range of the header, full page height for y)
-        const colWidth = Math.max(bestItem.w, 40);
-        const rect = [
-          bestItem.x - 5,           // x1: left edge with small padding
-          0,                         // y1: bottom of page (will be dynamic during match)
-          bestItem.x + colWidth + 5, // x2: right edge with small padding  
-          999                        // y2: top of page (will be dynamic during match)
-        ];
-        fields.push({ fieldName: col.fieldName, rect, page: 1 });
-      } else {
-        console.warn(`Could not find header for "${col.fieldName}" in ${docName}`);
-      }
-    }
+    console.log("Header clusters:", columnHeaders.map(h => `"${h.text}" @x=${Math.round(h.x)}`));
     
-    return fields;
-  }
-
-  async function createG703Template(docName) {
-    const columnDefs = [
-      { headerPatterns: ["cost", "cost code", "item", "item no", "no."], fieldName: "Row Key" },
-      { headerPatterns: ["this period", "work completed", "completed this period"], fieldName: "Work Completed This Period" },
-      { headerPatterns: ["stored this period", "materials stored", "materials presently stored"], fieldName: "Materials Stored This Period" },
-      { headerPatterns: ["current period", "retainage", "current"], fieldName: "Retainage Current Period" }
+    // Find target columns by header text
+    const targets = [
+      { patterns: ["completed", "work completed", "this period", "work"], fieldName: "Work Completed This Period" },
+      { patterns: ["stored", "materials stored", "materials", "presently stored"], fieldName: "Materials Stored This Period" },
+      { patterns: ["current period", "current", "retainage"], fieldName: "Retainage Current Period" }
     ];
     
-    try {
-      const fields = await autoCreateTableTemplate(docName, columnDefs);
-      if (fields.length < 2) throw new Error("Could not detect enough columns");
+    for (const target of targets) {
+      let bestHeader = null;
+      let bestScore = 0;
       
-      const tplName = "G703 Schedule of Values";
-      S.templates.set(tplName, {
-        category: "User Templates",
-        keywords: ["schedule of values", "application for payment", "continuation sheet", "g703", "g-703"],
-        isTable: true,
-        fields: fields
-      });
-      await saveRegistry();
-      status(`Auto-created template "${tplName}" with ${fields.length} columns.`, "ok");
-      return tplName;
-    } catch(e) {
-      console.error("G703 template creation failed", e);
-      status("Could not auto-detect G703 columns: " + e.message, "err");
-      return null;
+      for (const header of columnHeaders) {
+        let score = 0;
+        for (const pat of target.patterns) {
+          if (header.text.includes(pat)) score += pat.length;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestHeader = header;
+        }
+      }
+      
+      if (bestHeader) {
+        // Find the closest numeric item in the data row to this header X position
+        let closestDataItem = null;
+        let closestDist = Infinity;
+        for (const ni of numericItems) {
+          const dist = Math.abs(ni.x - bestHeader.x);
+          if (dist < closestDist) { closestDist = dist; closestDataItem = ni; }
+        }
+        
+        if (closestDataItem) {
+          const colW = Math.max(closestDataItem.w, 40);
+          fields.push({
+            fieldName: target.fieldName,
+            rect: [closestDataItem.x - 8, 0, closestDataItem.x + colW + 8, 999],
+            page: 1
+          });
+          console.log(`Mapped "${target.fieldName}" -> header "${bestHeader.text}" -> data @x=${closestDataItem.x}`);
+        }
+      }
     }
+    
+    if (fields.length < 2) throw new Error("Could not detect enough columns. Check browser console (F12) for debug info.");
+    
+    const tplName = "G703 Schedule of Values";
+    S.templates.set(tplName, {
+      category: "User Templates",
+      keywords: ["schedule of values", "application for payment", "continuation sheet", "g703", "g-703"],
+      isTable: true,
+      fields: fields
+    });
+    await saveRegistry();
+    status(`Auto-created "${tplName}" with ${fields.length} columns: ${fields.map(f => f.fieldName).join(", ")}`, "ok");
+    return tplName;
   }
 
   function buildTemplateSelectHTML(selectedVal) {
@@ -2007,12 +2087,15 @@ function wire(){
     
     // If no table templates exist, auto-create a G703 template from the current doc
     if (tableTpls.length === 0 && S.cur) {
-      status("No Table Templates found. Auto-detecting G703 columns...", "ok");
-      const created = await createG703Template(S.cur);
-      if (created) {
-        tableTpls.push(created);
-      } else {
-        status("Auto-detect failed. Use 'Table Template' mode to manually create one.", "err");
+      status("No Table Templates found. Auto-detecting columns...", "ok");
+      try {
+        const created = await createG703Template(S.cur);
+        if (created) {
+          tableTpls.push(created);
+        }
+      } catch(e) {
+        console.error("Auto-detect failed:", e);
+        status("Auto-detect failed: " + e.message + ". Use 'Table Template' mode to manually create one.", "err");
         return;
       }
     }
