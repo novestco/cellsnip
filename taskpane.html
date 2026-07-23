@@ -1102,7 +1102,8 @@ function itemsToText(items){
 /* group items into visual rows by y proximity */
 function groupRows(items){
   const rows = [];
-  const tol = median(items.map(i=>i.h)) * 0.6 || 4;
+  const medH = median(items.map(i=>i.h)) || 6;
+  const tol = Math.max(6.5, medH * 0.85);
   for (const it of items){
     const row = rows.find(r => Math.abs(r.y - it.y) <= tol);
     if (row){ row.items.push(it); row.y = (row.y + it.y)/2; }
